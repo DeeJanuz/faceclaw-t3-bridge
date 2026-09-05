@@ -1,4 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
+import { assertArchivePlatform } from "./archive-platform.js";
 import { constants } from "node:fs";
 import { lstat, mkdir, open, readdir, realpath, rename, rm } from "node:fs/promises";
 import { dirname, isAbsolute, join, resolve } from "node:path";
@@ -56,7 +57,7 @@ function literal(text: string): string {
 
 /** Local-owner boundary: all components must be real directories, never symlinks. */
 export class ArchiveStore {
-  constructor(readonly config: ArchiveConfig) {}
+  constructor(readonly config: ArchiveConfig) { assertArchivePlatform(); }
   async safePath(path: string, createParents = false): Promise<string> {
     if (isAbsolute(path) || path.split(/[\\/]/).some((part) => part === ".." || part === "." || !part)) throw new Error("Unsafe archive path");
     const root = this.config.workspaceRoot;

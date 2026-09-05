@@ -24,6 +24,10 @@ Defaults are deliberately narrow:
 
 Do not put `BRIDGE_TOKEN` or `T3_ACCESS_TOKEN` in app source, `app.json`, `VITE_*` variables, or the `.ehpk`. Enter the bridge URL and pairing passphrase at runtime through the companion-app setup UI. The phone discards the passphrase and stores the returned bearer token. Treat that stored token as a bearer credential.
 
+## Optional assistant archive
+
+The optional assistant archive is supported on macOS and Linux only. Its filesystem protections require POSIX ownership checks, no-follow file opens, and directory synchronization. Windows rejects archive configuration before accessing files; leave `BRIDGE_ARCHIVE_PROJECT_ID` and `BRIDGE_ARCHIVE_WORKSPACE_ROOT` unset there. T3 access, notifications, weather, and local voice transcription remain available on Windows.
+
 ## Install and run
 
 Requirements:

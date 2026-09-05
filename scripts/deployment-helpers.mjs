@@ -195,7 +195,7 @@ function plistValue(value, indent) {
 export function archiveEnvironment(projectId, workspaceRoot) {
   if (!projectId && !workspaceRoot) return {};
   if (typeof projectId !== "string" || !/^[A-Za-z0-9_-]{1,128}$/.test(projectId) ||
-      typeof workspaceRoot !== "string" || !path.isAbsolute(workspaceRoot) || path.normalize(workspaceRoot) !== workspaceRoot || /[\u0000\r\n]/.test(workspaceRoot)) {
+      typeof workspaceRoot !== "string" || !path.posix.isAbsolute(workspaceRoot) || path.posix.normalize(workspaceRoot) !== workspaceRoot || /[\u0000\r\n]/.test(workspaceRoot)) {
     throw new Error("Archive setup requires an exact project ID and normalized absolute workspace root");
   }
   return { BRIDGE_ARCHIVE_PROJECT_ID: projectId, BRIDGE_ARCHIVE_WORKSPACE_ROOT: workspaceRoot };

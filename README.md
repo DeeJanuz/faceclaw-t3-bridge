@@ -14,7 +14,7 @@ T3 Code and a working agent/provider are assumed to be installed already. You do
 
 The skill covers Windows, macOS, and Linux. It installs or discovers Node.js, Git, Tailscale, and local whisper.cpp transcription, preserving your existing T3 installation and projects. Mac uses a user LaunchAgent; Windows uses a user Scheduled Task; Linux uses a user systemd service. Startup is at sign-in. Keep T3 Code running and the computer awake while using the glasses.
 
-Mac deployment has been exercised locally. Windows and Linux installers are beta paths with automated platform tests; a successful dry run or CI build does not establish a complete phone-to-glasses hardware test on those platforms.
+Mac deployment has been exercised locally. Windows and Linux installers are beta paths with automated platform tests; a successful dry run or CI build does not establish a complete phone-to-glasses hardware test on those platforms. The optional assistant archive is unavailable on Windows; the normal bridge, notifications, weather, and voice features remain supported.
 
 ## Finish setup on your phone
 

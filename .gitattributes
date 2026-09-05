@@ -1,0 +1,8 @@
+# Keep runnable scripts and source portable when Git core.autocrlf is enabled.
+* text=auto eol=lf
+*.png binary
+*.jpg binary
+*.webp binary
+*.woff binary
+*.woff2 binary
+*.ehpk binary

@@ -5,8 +5,12 @@ import { join } from "node:path";
 import { afterEach, test } from "node:test";
 import { ArchiveStore, AssistantArchive, redactText } from "../src/assistant-archive.js";
 import { loadConfig } from "../src/config.js";
+import { assertArchivePlatform } from "../src/archive-platform.js";
 import type { T3Client, T3ThreadSnapshot, T3Thread } from "../src/types.js";
 
+function archiveTest(name: string, run: () => void | Promise<void>): void {
+  test(name, { skip: !["darwin", "linux"].includes(process.platform) ? "Optional archive requires POSIX ownership and durable filesystem operations" : false }, run);
+}
 const roots: string[] = [];
 afterEach(async () => { for (const root of roots.splice(0)) await rm(root, { recursive: true, force: true }); });
 const at = "2026-09-04T12:00:00.000Z";
@@ -27,7 +31,7 @@ async function fixture(pages?: T3ThreadSnapshot[]) {
   return { root, config, client, calls, archive, store: new ArchiveStore(config.archive!), history };
 }
 
-test("archive is disabled unless both settings exist; allowlist and root enforced", () => {
+archiveTest("archive is disabled unless both settings exist; allowlist and root enforced", () => {
   const base = { BRIDGE_TOKEN: "a".repeat(32), T3_ACCESS_TOKEN: "test" };
   assert.equal(loadConfig({ ...base, BRIDGE_ARCHIVE_PROJECT_ID: projectId }).archive, null);
   assert.equal(loadConfig({ ...base, BRIDGE_ARCHIVE_WORKSPACE_ROOT: "/tmp/assistant" }).archive, null);
@@ -35,7 +39,7 @@ test("archive is disabled unless both settings exist; allowlist and root enforce
   assert.throws(() => loadConfig({ ...base, BRIDGE_ARCHIVE_PROJECT_ID: projectId, BRIDGE_ARCHIVE_WORKSPACE_ROOT: "/tmp/assistant", BRIDGE_PROJECT_IDS: "other" }));
 });
 
-test("exports all pages, merges stable colon IDs, and never fetches unrelated threads", async () => {
+archiveTest("exports all pages, merges stable colon IDs, and never fetches unrelated threads", async () => {
   const f = await fixture([page(thread(Array.from({ length: 100 }, (_, i) => message(i + 100))), true, "1"), page(thread(Array.from({ length: 101 }, (_, i) => message(i))), true, "2"), page(thread([message(200)]))]);
   await f.archive.poll();
   assert.equal(f.archive.status().state, "ok");
@@ -49,7 +53,7 @@ test("exports all pages, merges stable colon IDs, and never fetches unrelated th
   assert.equal((await f.store.state("thread-1"))!.messages.length, 201);
 });
 
-test("only exports settled user-visible text and allowlisted approval decisions", async () => {
+archiveTest("only exports settled user-visible text and allowlisted approval decisions", async () => {
   const item = thread([message(0), message(1, { role: "system", text: "SECRET SYSTEM PROMPT" }) as never, message(2, { streaming: true }), message(3, { text: 'hello test-upstream-secret sk-proj-AbCdEf1234567890 ![[file]]' })], {
     activities: [{ id: "activity:approval", kind: "approval.resolved", createdAt: at, turnId: "turn-0", payload: { decision: "accept", secret: "RAW SECRET" } }, { id: "activity:tool", kind: "tool.completed", createdAt: at, turnId: "turn-0", payload: { status: "completed", stdout: "RAW TOOL TRACE" } }],
   });
@@ -61,14 +65,14 @@ test("only exports settled user-visible text and allowlisted approval decisions"
   assert.match(text, /```text\nhello/);
 });
 
-test("active turns are excluded even when their assistant message is not streaming", async () => {
+archiveTest("active turns are excluded even when their assistant message is not streaming", async () => {
   const earlier = "2026-09-03T12:00:00.000Z";
   const item = thread([message(0, { createdAt: earlier }), message(2)], { session: { status: "running", activeTurnId: "turn-2", updatedAt: at }, latestTurn: { turnId: "turn-2", state: "running", completedAt: null, requestedAt: at } });
   const f = await fixture([page(item)]); await f.archive.poll();
   assert.deepEqual((await f.store.state("thread-1"))!.messages.map((m) => m.id), ["assistant:msg_0"]);
 });
 
-test("wrong project/thread, unstable pages, and cursor loops fail closed", async () => {
+archiveTest("wrong project/thread, unstable pages, and cursor loops fail closed", async () => {
   for (const histories of [[page(thread([], { projectId: "other" }))], [page(thread([], { id: "other" }))], [page(thread(), true, "1"), page(thread([], { updatedAt: "2026-09-05T12:00:00.000Z" }))], [page(thread(), true, "1"), page(thread(), true, "1")]]) {
     const f = await fixture(histories); await f.archive.poll();
     assert.equal(f.archive.status().state, "error"); assert.equal(await f.store.state("thread-1"), null);
@@ -76,7 +80,7 @@ test("wrong project/thread, unstable pages, and cursor loops fail closed", async
   }
 });
 
-test("private files reject traversal and symlink destinations", async () => {
+archiveTest("private files reject traversal and symlink destinations", async () => {
   const f = await fixture();
   await assert.rejects(() => f.store.write("../escape.md", "x"));
   await assert.rejects(() => f.store.write("/tmp/escape.md", "x"));
@@ -85,7 +89,7 @@ test("private files reject traversal and symlink destinations", async () => {
   await f.archive.poll(); assert.equal(f.archive.status().state, "error");
 });
 
-test("partial output write retries from durable intent after restart", async () => {
+archiveTest("partial output write retries from durable intent after restart", async () => {
   const f = await fixture();
   const original = ArchiveStore.prototype.write;
   let failed = false;
@@ -99,7 +103,7 @@ test("partial output write retries from durable intent after restart", async () 
   assert.ok(state.exportedAt); assert.match((await f.store.read(state.paths[0]!))!, /Answer 0/);
 });
 
-test("explicit task classification moves completed/cancelled records and links outcome", async () => {
+archiveTest("explicit task classification moves completed/cancelled records and links outcome", async () => {
   const f = await fixture(); await f.archive.poll();
   const active = (await f.store.state("thread-1"))!.paths[0]!;
   assert.match(active, /vault\/inbox\/tasks/);
@@ -113,7 +117,7 @@ test("explicit task classification moves completed/cancelled records and links o
   assert.equal(await f.store.read(active), null);
 });
 
-test("forget requires exact review, removes selected messages and notes, persists exclusions", async () => {
+archiveTest("forget requires exact review, removes selected messages and notes, persists exclusions", async () => {
   const f = await fixture([page(thread([message(0), message(1)]))]); await f.archive.poll();
   await f.store.write("vault/personal/memories/saved.md", "Answer 0");
   const plan = await f.store.previewForget("thread-1", ["assistant:msg_0"], ["vault/personal/memories/saved.md"]);
@@ -126,7 +130,7 @@ test("forget requires exact review, removes selected messages and notes, persist
   assert.deepEqual((await f.store.state("thread-1"))!.messages.map((message) => message.id), ["assistant:msg_1"]);
 });
 
-test("changed review is refused; whole-thread forget survives restart and sync failure", async () => {
+archiveTest("changed review is refused; whole-thread forget survives restart and sync failure", async () => {
   const f = await fixture(); await f.archive.poll();
   const plan = await f.store.previewForget("thread-1", [], []);
   const path = plan.files[0]!.path;
@@ -146,7 +150,7 @@ test("known pasted credential formats are redacted", () => {
   assert.doesNotMatch(redactText("password=123456 https://user:pass@example.com/?token=abcdef Bearer tokenvalue"), /123456|user:pass|abcdef|tokenvalue/);
 });
 
-test("forget removes orphan atomic-write copies left by a crashed exporter", async () => {
+archiveTest("forget removes orphan atomic-write copies left by a crashed exporter", async () => {
   const f = await fixture(); await f.archive.poll();
   const state = (await f.store.state("thread-1"))!;
   const orphan = `${state.paths[0]}.11111111-1111-1111-1111-111111111111.tmp`;
@@ -156,7 +160,7 @@ test("forget removes orphan atomic-write copies left by a crashed exporter", asy
   assert.equal(await f.store.read(orphan), null);
 });
 
-test("note-only forgetting needs no archive thread and preserves review/retry checks", async () => {
+archiveTest("note-only forgetting needs no archive thread and preserves review/retry checks", async () => {
   const f = await fixture();
   const path = "vault/personal/memories/standalone.md";
   await f.store.write(path, "Standalone memory");
@@ -172,4 +176,21 @@ test("note-only forgetting needs no archive thread and preserves review/retry ch
   assert.deepEqual(refreshed, ["personal/memories/standalone.md"]);
   assert.deepEqual((await f.store.exclusions()).threads, []);
   await assert.rejects(() => f.store.previewForget(null, [], []));
+});
+
+
+test("unsupported archive platforms reject opt-in before files are accessed while defaults remain usable", () => {
+  assert.throws(() => assertArchivePlatform("win32"), /supported only on macOS and Linux/);
+  assert.doesNotThrow(() => assertArchivePlatform("darwin"));
+  assert.doesNotThrow(() => assertArchivePlatform("linux"));
+  const base = { BRIDGE_TOKEN: "a".repeat(32) };
+  const config = loadConfig(base);
+  assert.equal(config.archive, null);
+  assert.equal(new AssistantArchive(config, {} as T3Client).status().state, "disabled");
+  if (process.platform === "win32") {
+    for (const settings of [{ BRIDGE_ARCHIVE_PROJECT_ID: projectId }, { BRIDGE_ARCHIVE_WORKSPACE_ROOT: join(tmpdir(), "archive") }, { BRIDGE_ARCHIVE_PROJECT_ID: projectId, BRIDGE_ARCHIVE_WORKSPACE_ROOT: join(tmpdir(), "archive") }]) {
+      assert.throws(() => loadConfig({ ...base, ...settings }), /supported only on macOS and Linux/);
+    }
+    assert.throws(() => new ArchiveStore({ projectId, workspaceRoot: join(tmpdir(), "archive") }), /supported only on macOS and Linux/);
+  }
 });

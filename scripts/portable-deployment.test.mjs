@@ -214,3 +214,23 @@ test('generated macOS LaunchAgent actually forwards only selected T3 settings th
     assert.deepEqual(result, { app: config.t3AppPath, base: config.t3BaseDir, url: config.t3BaseUrl });
   } finally { await rm(directory, { recursive: true, force: true }); }
 });
+
+test('Git checkout preserves runnable LF scripts even with Windows autocrlf enabled', async () => {
+  const { execFile } = await import('node:child_process');
+  const { promisify } = await import('node:util');
+  const execute = promisify(execFile);
+  const directory = await mkdtemp(path.join(await realpath(tmpdir()), 'bridge-line-endings-'));
+  try {
+    await execute('git', ['init', '--quiet', directory]);
+    await copyFile(new URL('../.gitattributes', import.meta.url), path.join(directory, '.gitattributes'));
+    const script = path.join(directory, 'runner.mjs');
+    const content = '#!/usr/bin/env node\nprocess.exit(0);\n';
+    await writeFile(script, content);
+    await execute('git', ['-C', directory, '-c', 'core.autocrlf=true', 'add', '.gitattributes', 'runner.mjs']);
+    await rm(script);
+    await execute('git', ['-C', directory, '-c', 'core.autocrlf=true', 'checkout-index', '--all', '--force']);
+    const checkedOut = await readFile(script, 'utf8');
+    assert.equal(checkedOut, content);
+    assert.equal(checkedOut.includes('\r'), false);
+  } finally { await rm(directory, { recursive: true, force: true }); }
+});

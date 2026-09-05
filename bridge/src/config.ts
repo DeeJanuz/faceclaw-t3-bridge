@@ -1,4 +1,5 @@
 import { isAbsolute, normalize } from "node:path";
+import { assertArchivePlatform } from "./archive-platform.js";
 import type { BridgeConfig, RuntimeMode } from "./types.js";
 
 const BASE64URL_SECRET = /^[A-Za-z0-9_-]{32,256}$/;
@@ -137,6 +138,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): BridgeConfig {
 
   const archiveProject = env.BRIDGE_ARCHIVE_PROJECT_ID?.trim();
   const archiveRoot = env.BRIDGE_ARCHIVE_WORKSPACE_ROOT?.trim();
+  if (archiveProject || archiveRoot) assertArchivePlatform();
   if (archiveRoot && (!isAbsolute(archiveRoot) || normalize(archiveRoot) !== archiveRoot || /[\u0000\r\n]/.test(archiveRoot))) {
     throw new Error("BRIDGE_ARCHIVE_WORKSPACE_ROOT must be a normalized absolute directory");
   }

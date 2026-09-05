@@ -12,6 +12,8 @@ Version 0.3.0 adds a custom Android companion in the sibling `android companion/
 
 Android supplies the reply capability on each notification. Signal, Google Messages, and WhatsApp are the initial device acceptance targets. Gmail and other apps use the same capability check; there are no app-specific messaging credentials or integrations.
 
+Pairing saves credentials; app selection requires a live connection from Even Phone Companion to the bridge. If the status says **Phone disconnected**, the searchable app list and checked selections are the last saved snapshot. Choices stay disabled until the companion reconnects. Open the companion and check its connection status, keep Tailscale connected, and ensure the computer is awake. If it reports notification access is needed, enable that permission in Android settings. Updating an inbox notification preserves the existing app controls so it cannot interrupt a selection in progress.
+
 ## Glasses behavior
 
 The shared inbox contains T3 completion alerts and Android notifications, ordered newest first with timestamps. New content updates the existing phone card and moves it up while keeping the selected item focused. Reading a phone notification leaves it active.

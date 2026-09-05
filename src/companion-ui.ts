@@ -1,6 +1,7 @@
 import { debugToolsEnabled } from './debug-tools'
 import { mountOsMirror } from './os-mirror'
 import type { PhoneSnapshot } from './phone-protocol'
+import { mountPhoneSettings } from './phone-settings'
 import type { OsEventTypeList } from '@evenrealities/even_hub_sdk'
 import { INPUT_DEFINITIONS, inputCode } from './input-events'
 import { displayCases, type DisplayTestSelection } from './display-diagnostics'
@@ -221,37 +222,14 @@ export function mountCompanionUi(
     try { node.textContent = await settingsActions?.createPhonePairing?.() ?? 'Connect to the bridge first.' }
     catch (error) { node.textContent = error instanceof Error ? error.message : String(error) }
   }
-  requiredElement<HTMLInputElement>('phone-app-filter').oninput = () => {
-    const query = requiredElement<HTMLInputElement>('phone-app-filter').value.trim().toLocaleLowerCase()
-    document.querySelectorAll<HTMLElement>('#phone-apps label').forEach(label => { label.hidden = !label.dataset.search?.includes(query) })
-  }
+  const setPhoneSettings = mountPhoneSettings(requiredElement<HTMLElement>('phone-apps'),
+    requiredElement<HTMLInputElement>('phone-app-filter'), requiredElement<HTMLElement>('phone-status'),
+    settingsActions?.setPhoneAppEnabled)
   let panelGeneration = 0
   let cardTransition: number | undefined
   return {
     setArrivalBanner(text) { const node = requiredElement<HTMLElement>('mirror-arrival'); node.textContent = text ?? ''; node.hidden = !text },
-    setPhoneSettings(snapshot) {
-      requiredElement<HTMLElement>('phone-status').textContent = snapshot.connected ? snapshot.permissionGranted ? 'Phone connected' : 'Enable notification access in Android settings.' : 'Phone disconnected. Actions unavailable.'
-      const apps = requiredElement<HTMLElement>('phone-apps')
-      apps.replaceChildren()
-      for (const app of snapshot.apps) {
-        const label = document.createElement('label')
-        label.className = 'checkbox-label'
-        label.dataset.search = `${app.name} ${app.packageName}`.toLocaleLowerCase()
-        label.hidden = !label.dataset.search.includes(requiredElement<HTMLInputElement>('phone-app-filter').value.trim().toLocaleLowerCase())
-        const toggle = document.createElement('input')
-        toggle.type = 'checkbox'
-        toggle.checked = app.enabled
-        toggle.disabled = !snapshot.connected
-        toggle.onchange = async () => {
-          toggle.disabled = true
-          try { await settingsActions?.setPhoneAppEnabled?.(app.packageName, toggle.checked) }
-          catch (error) { toggle.checked = app.enabled; requiredElement<HTMLElement>('phone-status').textContent = error instanceof Error ? error.message : String(error) }
-          finally { toggle.disabled = !snapshot.connected }
-        }
-        label.append(toggle, document.createTextNode(`${app.name}${app.replyObserved ? ' · Reply supported' : ''}`))
-        apps.append(label)
-      }
-    },
+    setPhoneSettings,
     setSettings: settings.setSettings,
     setSettingsStatus: settings.setStatus,
     setOsMirror: mountOsMirror(app.querySelector<HTMLElement>('.preview')!),

@@ -1,5 +1,5 @@
 import { dashboardSurfaceText, dashboardSurfaceTiles, type DashboardSurface } from './dashboard-surface'
-import { OS_NOTIFICATION } from './os-layout'
+import { homeFocusRect, OS_NOTIFICATION, type OsRect } from './os-layout'
 
 export const isDashboardLayer = (surface?: DashboardSurface) => surface?.view === 'home' || surface?.view === 'notifications'
 
@@ -43,4 +43,27 @@ export function composeDashboardTiles(panel: number[][], surface: DashboardSurfa
     }
   }
   return tiles
+}
+
+/** Omit the permanently empty right margin and space below the home actions. */
+export function dashboardLayerImageBounds(surface: DashboardSurface): OsRect[] {
+  const bottom = Math.max(164, ...(surface.actions ?? []).map(row => {
+    const rect = homeFocusRect(surface.actions!.map(item => ({ ...item, selected: item === row })))
+    return rect.y + rect.height
+  }))
+  return [
+    { x: 0, y: 0, width: 288, height: 144 },
+    { x: 0, y: 144, width: 288, height: 144 },
+    { x: 288, y: 0, width: 272, height: 144 },
+    { x: 288, y: 144, width: 259, height: Math.min(144, bottom - 144) },
+  ]
+}
+
+export function dashboardLayerImageTiles(tiles: number[][], surface: DashboardSurface): number[][] {
+  return dashboardLayerImageBounds(surface).map((rect, index) => {
+    if (rect.width === 288 && rect.height === 144) return tiles[index]!
+    const cropped = new Array<number>(rect.width * rect.height)
+    for (let y = 0; y < rect.height; y++) for (let x = 0; x < rect.width; x++) cropped[y * rect.width + x] = tiles[index]![y * 288 + x]!
+    return cropped
+  })
 }

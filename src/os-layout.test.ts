@@ -31,8 +31,7 @@ describe('Even OS native transitions', () => {
     const display = new GlassesDisplay(bridge as unknown as EvenAppBridge)
     await display.create()
     await display.render({ ...reader, motion: { direction, from, to, id: 1 } })
-    if (['drop', 'retract'].includes(direction)) expect(bridge.rebuildPageContainer).toHaveBeenCalledOnce()
-    else { expect(bridge.rebuildPageContainer.mock.calls.length).toBeGreaterThan(3); expect(bridge.rebuildPageContainer.mock.calls.length).toBeLessThanOrEqual(12) }
+    expect(bridge.rebuildPageContainer).toHaveBeenCalledOnce()
     expect(bridge.updateImageRawData).not.toHaveBeenCalled()
     const pages = bridge.rebuildPageContainer.mock.calls.map(([page]) => page)
     for (const page of pages) {
@@ -44,7 +43,7 @@ describe('Even OS native transitions', () => {
     if (outlines.length > 1) expect(outlines[0].height < outlines[1].height).toBe(['expand', 'rise'].includes(direction))
     expect(pages.at(-1).textObject.find((item: any) => item.containerName === 'body')).toMatchObject({ xPosition: 16, width: 544 })
   })
-  it('skips expired animation samples after a slow SDK acknowledgement', async () => {
+  it('sends one final layout even when SDK acknowledgements are slow', async () => {
     const bridge = bridgeMock()
     const display = new GlassesDisplay(bridge as unknown as EvenAppBridge)
     await display.create()
@@ -53,11 +52,11 @@ describe('Even OS native transitions', () => {
     bridge.rebuildPageContainer.mockImplementation(async () => { elapsed += 250; return true })
     try {
       await display.render({ ...reader, motion: { direction: 'rise', from: OS_READER_CLOSED, to: OS_FULL, id: 1 } })
-      expect(bridge.rebuildPageContainer).toHaveBeenCalledTimes(2)
+      expect(bridge.rebuildPageContainer).toHaveBeenCalledOnce()
       expect(bridge.rebuildPageContainer.mock.lastCall![0].textObject).toContainEqual(expect.objectContaining({ content: 'A message' }))
     } finally { clock.mockRestore() }
   })
-  it('serializes steps and recovers after a rejected native transition', async () => {
+  it('serializes final layouts and recovers after a rejected update', async () => {
     const bridge = bridgeMock()
     const display = new GlassesDisplay(bridge as unknown as EvenAppBridge)
     await display.create()
@@ -67,7 +66,7 @@ describe('Even OS native transitions', () => {
     await vi.waitFor(() => expect(bridge.rebuildPageContainer).toHaveBeenCalledOnce())
     expect(bridge.textContainerUpgrade).not.toHaveBeenCalled()
     release(false)
-    await expect(opening).rejects.toThrow('OS transition update failed')
+    await expect(opening).rejects.toThrow('Dashboard layout update failed')
     await display.render(reader)
     expect(bridge.rebuildPageContainer).toHaveBeenCalledTimes(2)
     expect(bridge.rebuildPageContainer.mock.lastCall![0].textObject).toContainEqual(expect.objectContaining({ content: 'A message' }))

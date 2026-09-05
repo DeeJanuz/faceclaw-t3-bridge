@@ -2,7 +2,7 @@
 
 **T3 Code Assistant** connects your existing T3 Code installation, Even Realities G2 glasses, and an optional Android notification companion. Read conversations, dictate and review replies, answer plan questions, and see local weather from your glasses.
 
-**Public beta:** Even Hub app 0.5.1. The computer bridge and glasses frontend are in this repository. The [Android companion](https://github.com/DeeJanuz/even-t3-android) has its own source and signed APK releases. This is an independent community project, not an official T3 Code or Even Realities product.
+**Public beta:** Even Hub app 0.5.2. The computer bridge and glasses frontend are in this repository. The [Android companion](https://github.com/DeeJanuz/even-t3-android) has its own source and signed APK releases. This is an independent community project, not an official T3 Code or Even Realities product.
 
 ## Install with your T3 Code agent
 

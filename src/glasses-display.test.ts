@@ -21,7 +21,7 @@ function mockBridge() {
 }
 
 describe('GlassesDisplay live activity spinner', () => {
-  it.each([true, false])('withholds home text through the final image upload (success: %s)', async (success) => {
+  it.each([true, false])('shows usable home text before the final image upload (success: %s)', async (success) => {
     const bridge = mockBridge()
     const display = new GlassesDisplay(bridge as unknown as EvenAppBridge)
     await display.create()
@@ -35,7 +35,7 @@ describe('GlassesDisplay live activity spinner', () => {
     await vi.waitFor(() => expect(bridge.updateImageRawData).toHaveBeenCalledTimes(4))
     const page = bridge.rebuildPageContainer.mock.lastCall![0]
     expect(validateEvenHubPageContainer(page)).toEqual({ valid: true })
-    expect(page.textObject.every((item: any) => item.content === ' ')).toBe(true)
+    expect(page.textObject.find((item: any) => item.containerName === 'header').content).toBe('0')
     expect(bridge.textContainerUpgrade).not.toHaveBeenCalled()
     release(success ? ImageRawDataUpdateResult.success : ImageRawDataUpdateResult.imageException)
     if (success) await opening
@@ -46,7 +46,50 @@ describe('GlassesDisplay live activity spinner', () => {
       await display.render(frame)
       expect(bridge.rebuildPageContainer).toHaveBeenCalledTimes(2)
     }
-    expect(bridge.textContainerUpgrade.mock.calls.map(([item]) => item.content)).toEqual(['0', '\n', 'Tap: review', ' ', ' ', ' '])
+    expect(bridge.textContainerUpgrade).not.toHaveBeenCalled()
+  })
+  it.each([false, true])('interrupts a stale image burst and completes the correct view (navigates: %s)', async navigates => {
+    const bridge = mockBridge()
+    const display = new GlassesDisplay(bridge as unknown as EvenAppBridge)
+    await display.create()
+    const home: GlassesFrame = { header: 'HOME', body: '', dashboardSurface: {
+      view: 'home', title: 'HOME', text: '', footer: '',
+      panel: { hour: '12', minute: '30', period: 'PM', hour24: 12, date: 'Sat 09/05', connection: 'Connected', batteryPercent: 50, weather: [], unread: 0 } } }
+    let release!: (result: ImageRawDataUpdateResult) => void
+    bridge.updateImageRawData.mockImplementationOnce(() => new Promise(resolve => { release = resolve }))
+    const returning = display.render(home)
+    await vi.waitFor(() => expect(bridge.updateImageRawData).toHaveBeenCalledOnce())
+    display.prioritizeInput()
+    release(ImageRawDataUpdateResult.success)
+    await returning
+    expect(bridge.updateImageRawData).toHaveBeenCalledOnce()
+    if (navigates) await display.render({ ...home, dashboardSurface: { ...home.dashboardSurface!, view: 'voice', title: 'LISTENING', text: 'Speak now' } })
+    await display.completePendingImages()
+    expect(bridge.updateImageRawData.mock.calls.map(([item]) => item.containerID)).toEqual(navigates ? [9] : [9, 10, 11, 12])
+    expect(bridge.rebuildPageContainer).toHaveBeenCalledTimes(navigates ? 2 : 1)
+    if (!navigates) {
+      await display.render(home)
+      expect(bridge.updateImageRawData).toHaveBeenCalledTimes(4)
+    }
+  })
+  it('updates each changed overlay label once and preserves all resident image containers', async () => {
+    const bridge = mockBridge()
+    const display = new GlassesDisplay(bridge as unknown as EvenAppBridge)
+    await display.create()
+    const home: GlassesFrame = { header: 'HOME', body: '', dashboardSurface: {
+      view: 'home', title: 'HOME', text: '', footer: '',
+      panel: { hour: '12', minute: '30', period: 'PM', hour24: 12, date: 'Sat 09/05', connection: 'Connected', batteryPercent: 50, weather: [], unread: 2 },
+      actions: [{ key: 'assistant', label: 'Ask assistant', selected: true }, { key: 'sessions', label: 'Sessions', selected: false }] } }
+    await display.render(home)
+    bridge.rebuildPageContainer.mockClear()
+    bridge.updateImageRawData.mockClear()
+    bridge.textContainerUpgrade.mockClear()
+    await display.render({ ...home, dashboardSurface: { ...home.dashboardSurface!, view: 'notifications', title: 'Signal', text: 'Friends: Lunch?', trailing: '1/2' } })
+    expect(bridge.rebuildPageContainer).not.toHaveBeenCalled()
+    expect(bridge.updateImageRawData.mock.calls.map(([item]) => item.containerID)).toEqual([9, 11])
+    const names = bridge.textContainerUpgrade.mock.calls.map(([item]) => item.containerName)
+    expect(names).toHaveLength(5)
+    expect(new Set(names).size).toBe(names.length)
   })
   it('opens full-screen voice with zero image calls', async () => {
     const bridge = mockBridge()
@@ -120,7 +163,7 @@ describe('GlassesDisplay live activity spinner', () => {
     await display.render(frame)
     expect(bridge.updateImageRawData.mock.calls.map(([item]) => item.containerID)).toEqual([])
   })
-  it('fits pinned previews and uses native geometry steps without intermediate image animation', async () => {
+  it('fits pinned previews and commits final native geometry without animation backlog', async () => {
     const bridge = mockBridge()
     const display = new GlassesDisplay(bridge as unknown as EvenAppBridge)
     await display.create()
@@ -141,11 +184,11 @@ describe('GlassesDisplay live activity spinner', () => {
     bridge.rebuildPageContainer.mockClear()
     bridge.updateImageRawData.mockClear()
     await display.render({ header: 'THREAD', body: 'The selected session', askAssistant: true, motion: { direction: 'rise', id: 2, from: { x: 0, y: 286, width: 576, height: 2 }, to: { x: 0, y: 0, width: 576, height: 288 } } })
-    expect(bridge.rebuildPageContainer.mock.calls.length).toBeGreaterThan(3)
+    expect(bridge.rebuildPageContainer).toHaveBeenCalledOnce()
     expect(bridge.updateImageRawData.mock.calls.every(([update]) => update.imageData.length <= 400)).toBe(true)
     bridge.updateImageRawData.mockClear()
     await display.render({ ...home, motion: { direction: 'collapse', id: 3, from: { x: 0, y: 0, width: 576, height: 288 }, to: { x: 259, y: 178, width: 288, height: 42 } } })
-    expect(bridge.rebuildPageContainer.mock.calls.length).toBeGreaterThan(6)
+    expect(bridge.rebuildPageContainer).toHaveBeenCalledTimes(2)
     expect(bridge.updateImageRawData).toHaveBeenCalledTimes(2)
     expect(bridge.rebuildPageContainer.mock.calls.some(([page]) => page.textObject.some((item: any) => item.containerName.startsWith('slide-')))).toBe(false)
     for (const [page] of bridge.rebuildPageContainer.mock.calls) {

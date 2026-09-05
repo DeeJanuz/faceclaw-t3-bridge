@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { composeDashboardTiles, dashboardLayerText } from './dashboard-overlay'
+import { composeDashboardTiles, dashboardLayerText, dashboardLayerImageBounds, dashboardLayerImageTiles } from './dashboard-overlay'
 import type { DashboardSurface } from './dashboard-surface'
 import { OS_NOTIFICATION } from './os-layout'
 
@@ -37,5 +37,26 @@ describe('stationary notification overlay', () => {
     expect(after.overlayMeta).toBe('12:30 PM  1/2')
     expect(after.footer).toBe('')
     expect(after.overlayBody).toBe('Friends')
+  })
+})
+
+
+describe('cropped dashboard image transfers', () => {
+  it.each(['home', 'notifications', 'banner', 'previews'] as const)('preserves every visible pixel for %s', scenario => {
+    const surface: DashboardSurface = { ...home, view: scenario === 'notifications' ? 'notifications' : 'home',
+      actions: home.actions!.map(row => ({ ...row, previews: scenario === 'previews' && row.key === 'assistant' ? ['Long preview'] : row.previews })) }
+    const panel = Array.from({ length: 2 }, () => new Array(220 * 144).fill(130))
+    const full = composeDashboardTiles(panel, surface, scenario === 'banner' ? 'Signal\nHello' : undefined)
+    const bounds = dashboardLayerImageBounds(surface)
+    const cropped = dashboardLayerImageTiles(full, surface)
+    for (let tile = 0; tile < 4; tile++) {
+      const rect = bounds[tile]!
+      expect(cropped[tile]).toHaveLength(rect.width * rect.height)
+      for (let y = 0; y < 144; y++) for (let x = 0; x < 288; x++) {
+        const actual = x < rect.width && y < rect.height ? cropped[tile]![y * rect.width + x] : 0
+        if (actual !== full[tile]![y * 288 + x]) throw new Error(`Lost pixel ${tile}:${x},${y}`)
+      }
+    }
+    if (scenario !== 'previews') expect(cropped.flat().length).toBe(134803)
   })
 })

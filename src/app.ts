@@ -1976,9 +1976,13 @@ export class EvenT3App {
   }
 
   private enqueue(task: () => Promise<void>): void {
+    this.display.prioritizeInput?.()
     const generation = this.endpointGeneration
     this.eventQueue = this.eventQueue.then(async () => {
-      if (!this.closed && generation === this.endpointGeneration) await task()
+      if (!this.closed && generation === this.endpointGeneration) {
+        await task()
+        await this.display.completePendingImages?.()
+      }
     }).catch(async (error) => {
       if (this.closed || generation !== this.endpointGeneration) return
       await this.showError(errorMessage(error), this.screen === 'plan' || this.dictation?.returnScreen === 'plan' ? 'plan' : this.screen === 'transcript' ? 'transcript' : this.screen === 'projects' ? 'projects' : this.screen === 'notifications' ? 'notifications' : this.screen === 'dashboard' ? 'dashboard' : 'sessions')

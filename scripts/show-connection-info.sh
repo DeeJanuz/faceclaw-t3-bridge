@@ -30,13 +30,13 @@ CURRENT_HOST="$("$TAILSCALE" status --json 2>/dev/null | "$NODE_PATH" "$SCRIPT_D
 SERVE_STATE="$("$TAILSCALE" serve status --json 2>/dev/null | "$NODE_PATH" "$SCRIPT_DIR/deployment-helpers.mjs" serve-port-state "$CURRENT_HOST" "$HTTPS_PORT" "$BRIDGE_PORT")" || fail "Tailscale Serve is unavailable. Reconnect Tailscale or run scripts/install.sh again."
 [[ "$SERVE_STATE" == "ours" ]] || {
   if [[ "$SERVE_STATE" == "empty" ]]; then
-    fail "The T3 Bridge Tailscale Serve handler is missing. Run scripts/install.sh again."
+    fail "The T3 Code Assistant Tailscale Serve handler is missing. Run scripts/install.sh again."
   fi
-  fail "Tailscale Serve port $HTTPS_PORT does not match this T3 Bridge deployment. Review it before reinstalling."
+  fail "Tailscale Serve port $HTTPS_PORT does not match this T3 Code Assistant deployment. Review it before reinstalling."
 }
 
 WSS_URL="$("$NODE_PATH" "$SCRIPT_DIR/deployment-helpers.mjs" events-url "$CURRENT_HOST" "$HTTPS_PORT")" || fail "Could not create a safe bridge URL."
 note "WebSocket URL:"
 note "$WSS_URL"
-note "Copy this exact URL into the T3 Code Bridge setup screen on your phone."
+note "Copy this exact URL into the T3 Code Assistant setup screen on your phone."
 note "This command does not display the pairing passphrase or bearer token."

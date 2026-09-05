@@ -1,15 +1,15 @@
-# T3 Code Bridge for Even Realities G2
+# T3 Code Assistant Bridge
 
-An open-source bridge between your existing T3 Code installation, Even Realities G2 glasses, and an optional Android notification companion. Read conversations, dictate and review replies, answer plan questions, and see local weather from your glasses.
+**T3 Code Assistant** connects your existing T3 Code installation, Even Realities G2 glasses, and an optional Android notification companion. Read conversations, dictate and review replies, answer plan questions, and see local weather from your glasses.
 
-**Public beta:** Even Hub app 0.5.0. The computer bridge and glasses frontend are in this repository. The [Android companion](https://github.com/DeeJanuz/even-t3-android) has its own source and signed APK releases. This is an independent community project, not an official T3 Code or Even Realities product.
+**Public beta:** Even Hub app 0.5.1. The computer bridge and glasses frontend are in this repository. The [Android companion](https://github.com/DeeJanuz/even-t3-android) has its own source and signed APK releases. This is an independent community project, not an official T3 Code or Even Realities product.
 
 ## Install with your T3 Code agent
 
 T3 Code and a working agent/provider are assumed to be installed already. You do not need to follow a terminal setup guide yourself.
 
-1. Download [SKILL.md](https://raw.githubusercontent.com/DeeJanuz/even-t3-bridge/main/skills/t3-bridge-deploy/SKILL.md), or copy its contents into a T3 Code conversation.
-2. Ask your agent: **“Use this skill to install T3 Code Bridge on this computer, install its missing prerequisites, configure automatic startup, and give me my phone setup details.”**
+1. Download [SKILL.md](https://raw.githubusercontent.com/DeeJanuz/t3-code-assistant-bridge/main/skills/t3-bridge-deploy/SKILL.md), or copy its contents into a T3 Code conversation.
+2. Ask your agent: **“Use this skill to install T3 Code Assistant on this computer, install its missing prerequisites, configure automatic startup, and give me my phone setup details.”**
 3. Complete any operating-system administrator or Tailscale sign-in prompts on your own device. The agent builds the app, verifies the bridge, and supplies your `.ehpk`, endpoint URLs, and local pairing instructions.
 
 The skill covers Windows, macOS, and Linux. It installs or discovers Node.js, Git, Tailscale, and local whisper.cpp transcription, preserving your existing T3 installation and projects. Mac uses a user LaunchAgent; Windows uses a user Scheduled Task; Linux uses a user systemd service. Startup is at sign-in. Keep T3 Code running and the computer awake while using the glasses.
@@ -22,7 +22,7 @@ Use Android 9 or newer and an Even Realities app compatible with Even Hub SDK 0.
 
 1. **Private network:** Install Tailscale on the phone and sign in to the same tailnet as your computer. Complete VPN approval if Android requests it.
 2. **Even Hub app:** Use the personalized `.ehpk` supplied by the installer. Upload it through your [Even Hub developer portal](https://hub.evenrealities.com/login), assign the build to a beta group containing your Even account, and install it from the Even Realities phone app. Your agent can prepare the package; account sign-in and beta access belong to you.
-3. **Bridge connection:** In T3 Code Bridge’s phone settings, enter the installer’s **WebSocket URL** and your **pairing passphrase**, then save. The passphrase is exchanged for a scoped token and cleared from the form. Do not paste credentials into a T3 conversation, GitHub issue, or screenshot.
+3. **Bridge connection:** In T3 Code Assistant’s phone settings, enter the installer’s **WebSocket URL** and your **pairing passphrase**, then save. The passphrase is exchanged for a scoped token and cleared from the form. Do not paste credentials into a T3 conversation, GitHub issue, or screenshot.
 4. **Assistant and weather:** Choose an existing T3 project and model under Dashboard settings. Allow location for the Even Realities Android app, or choose a fallback city. New Ask assistant conversations use full access; ordinary T3 conversations keep their configured mode.
 5. **Optional phone messages:** Download the signed beta APK from [Android releases](https://github.com/DeeJanuz/even-t3-android/releases). Open it on the phone and allow that installer to install unknown apps. Enable notification access for Even Phone Companion. If Android blocks a sideloaded app’s notification access, enable **Allow restricted settings** in that app’s Android settings first.
 6. In Even Hub’s **Android notifications** section, select **Pair Android companion**. In the Android companion, enter the installer’s **HTTPS bridge origin** and the short-lived pairing code. Enable only the messaging apps you want to forward in Even Hub’s app list. No messaging-account password is needed.
@@ -51,6 +51,8 @@ The default private HTTPS port is 8443. If the installer chooses another port, u
 - **Optional Android companion:** Opt-in notification access and local reply handoff. Notification/reply contents are not stored by the companion. Android handoff confirms acceptance by the messaging app, not delivery to the recipient.
 
 The transport stays private through Tailscale Serve and normal HTTPS certificate validation. T3 credentials remain on the computer; the phone uses separately scoped credentials. Weather queries use approximate coordinates and the Open-Meteo noncommercial service. Source-code licensing does not change third-party service terms.
+
+The app keeps its existing package identity and pairing storage for compatible upgrades. Installed service names and data directories retain their original identifiers.
 
 ## Develop and verify
 

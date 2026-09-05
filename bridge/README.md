@@ -1,4 +1,4 @@
-# Even T3 bridge
+# T3 Code Assistant Bridge server
 
 Local, authenticated bridge for the Even Hub dashboard, an Android notification companion, and one T3 Code environment. The bridge exposes project/session reads, a reduced provider/model catalog, transcript reads, turn sends and steering, bounded activity summaries, voice transcription, and public weather lookups. It never exposes T3 filesystem, terminal, approval, account, or auth-management APIs. Speech recognition runs locally through whisper.cpp. No API key or cloud transcription service is required.
 

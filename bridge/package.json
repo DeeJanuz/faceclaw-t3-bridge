@@ -1,5 +1,5 @@
 {
-  "name": "even-t3-bridge",
+  "name": "t3-code-assistant-bridge-server",
   "version": "0.1.0",
   "private": true,
   "type": "module",

@@ -139,7 +139,7 @@ fi
 validate_port "$HTTPS_PORT" "HTTPS port"
 validate_port "$BRIDGE_PORT" "bridge port"
 [[ "$HTTPS_PORT" != "$BRIDGE_PORT" ]] || fail "HTTPS and bridge ports must differ."
-[[ "$REPO_ROOT" == /* && -f "$REPO_ROOT/app.json" && -f "$REPO_ROOT/bridge/package.json" ]] || fail "Run the installer from a complete T3 Bridge checkout."
+[[ "$REPO_ROOT" == /* && -f "$REPO_ROOT/app.json" && -f "$REPO_ROOT/bridge/package.json" ]] || fail "Run the installer from a complete T3 Code Assistant Bridge checkout."
 [[ "$REPO_ROOT" != *$'\n'* && "$REPO_ROOT" != *$'\r'* ]] || fail "Repository path contains invalid data."
 RUNTIME_DIR="$APP_SUPPORT_DIR/runtime"
 if [[ -e "$RUNTIME_DIR" ]]; then
@@ -395,7 +395,7 @@ if $DRY_RUN; then
   note "WebSocket URL: $WSS_URL"
 else
   "$SCRIPT_DIR/show-connection-info.sh"
-  note "From the T3 Bridge repository root, rerun this connection check any time with: npm run connection-info"
+  note "From the T3 Code Assistant Bridge repository root, rerun this connection check any time with: npm run connection-info"
   note "Service installed. T3 Code must be running for the bridge to connect."
   note "Upload the generated .ehpk from $APP_SUPPORT_DIR/artifacts/$TAILSCALE_HOST through the Even Hub developer portal."
   if [[ -n "$DEV_ORIGIN" ]]; then

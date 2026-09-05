@@ -89,7 +89,7 @@ test("classifies only the exact loopback Serve handler as owned", () => {
 
 test("creates an exact deployment whitelist without changing the tracked manifest object", () => {
   const source = {
-    name: "T3 Code Bridge",
+    name: "T3 Code Assistant",
     permissions: [
       { name: "network", desc: "bridge", whitelist: ["https://old.example"] },
       { name: "g2-microphone", desc: "voice" },
@@ -194,7 +194,7 @@ test("wildcard packaging skips host discovery and rejects conflicting flags", as
   const source = JSON.parse(await readFile(new URL('../app.json', import.meta.url), 'utf8'));
   const expectedVersion = nextPatchVersion(source.version);
   assert.equal(output.manifestVersion, expectedVersion);
-  assert.ok(output.packagePath.replaceAll("\\", "/").endsWith(`/tailscale-wildcard-port-8443/t3-code-bridge-tailscale-wildcard-${expectedVersion}.ehpk`));
+  assert.ok(output.packagePath.replaceAll("\\", "/").endsWith(`/tailscale-wildcard-port-8443/t3-code-assistant-tailscale-wildcard-${expectedVersion}.ehpk`));
   assert.equal(JSON.stringify(output.whitelist).includes("computer.example"), false);
   assert.deepEqual(output.whitelist, [
     "https://*.ts.net:8443",

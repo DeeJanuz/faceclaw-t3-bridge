@@ -126,8 +126,8 @@ async function main() {
   const artifactDirectory = path.join(options.outputDirectory, artifactKey);
   const manifestPath = path.join(artifactDirectory, "app.generated.json");
   const packageName = options.tailscaleWildcard
-    ? `t3-code-bridge-tailscale-wildcard-${version}.ehpk`
-    : `t3-code-bridge-${version}.ehpk`;
+    ? `t3-code-assistant-tailscale-wildcard-${version}.ehpk`
+    : `t3-code-assistant-${version}.ehpk`;
   const packagePath = path.join(artifactDirectory, packageName);
 
   if (options.dryRun) {

@@ -49,7 +49,7 @@ export function mountCompanionUi(
       <header class="topbar">
         <div>
           <p class="eyebrow">EVEN REALITIES G2</p>
-          <h1>T3 Code Bridge</h1>
+          <h1>T3 Code Assistant</h1>
         </div>
         <span id="status" class="status status-idle">Not connected</span>
       </header>
@@ -148,7 +148,7 @@ export function mountCompanionUi(
       app!.querySelectorAll<HTMLButtonElement>('[data-display-test], [data-input-event], #connection-form button').forEach(button => { button.disabled = true })
       restore.disabled = false
       testStatus.textContent = selection === 'card' ? 'Opening card.' : 'Testing. Watch the glasses display.'
-      testReport.value = `T3 Bridge display report | ${new Date().toISOString()}\n`
+      testReport.value = `T3 Code Assistant display report | ${new Date().toISOString()}\n`
       try {
         await onDisplayTest(selection, appendReport, controller.signal)
         testStatus.textContent = 'Finished. Check the report for accepted or failed steps.'

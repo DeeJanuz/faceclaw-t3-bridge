@@ -12,7 +12,7 @@ Verified September 5, 2026 against the **OS Guidelines** page of Even's public F
 
 ## Implemented mapping
 
-| Surface | T3 Bridge behavior |
+| Surface | T3 Code Assistant behavior |
 | --- | --- |
 | Home widgets | Persistent top bell/count, boxed Ask assistant and Sessions, and extension previews; thin inactive outlines and one heavier bright focus outline |
 | Expanded widget | Full 576×288 screen with a 544-pixel text column |

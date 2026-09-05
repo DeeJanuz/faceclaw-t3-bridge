@@ -604,7 +604,7 @@ export class EvenT3App {
     const phoneKey = card?.action.kind === 'phone' ? card.action.key : undefined
     const phone = this.phone.notifications.find(item => item.key === phoneKey)
     const time = card ? new Date(card.notification?.completedAt ?? 0).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit', hour12: true }) : ''
-    const source = phone?.appName ?? 'T3 Bridge'
+    const source = phone?.appName ?? 'T3 Code Assistant'
     const subject = phone?.title || phone?.sender || phone?.thread || card?.notification?.label || card?.title || ''
     const message = phone?.text ?? (card?.action.kind === 'reader' ? card.action.text.replace(/^TEST ONLY\s+/, '') : card?.action.kind === 'alert' ? 'A response is ready.' : card?.body ?? '')
     const body = card ? notificationPreview(subject, message) : ''

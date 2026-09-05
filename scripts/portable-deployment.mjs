@@ -43,7 +43,7 @@ function systemdQuote(value) {
   return '"' + cleanPath(value, 'linux').replaceAll('\\', '\\\\').replaceAll('%', '%%').replaceAll('$', () => '$$') + '"';
 }
 export function systemdUnit(node, runner, config) {
-  return `[Unit]\nDescription=Even T3 Code Bridge\nAfter=network.target\n\n[Service]\nType=simple\nExecStart=${[node, runner, config].map(systemdQuote).join(' ')}\nRestart=on-failure\nRestartSec=10\nUMask=0077\nNoNewPrivileges=true\n\n[Install]\nWantedBy=default.target\n`;
+  return `[Unit]\nDescription=T3 Code Assistant Bridge\nAfter=network.target\n\n[Service]\nType=simple\nExecStart=${[node, runner, config].map(systemdQuote).join(' ')}\nRestart=on-failure\nRestartSec=10\nUMask=0077\nNoNewPrivileges=true\n\n[Install]\nWantedBy=default.target\n`;
 }
 function ps(value) { return "'" + String(value).replaceAll("'", "''") + "'"; }
 export function windowsTaskScript(node, runner, config) {

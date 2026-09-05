@@ -1,15 +1,15 @@
 ---
 name: t3-bridge-deploy
-description: Install and configure T3 Code Bridge for Even Realities G2 on Windows, macOS, or Linux, including missing prerequisites, private Tailscale transport, local speech transcription, startup at sign-in, a personalized Even Hub package, and Android companion handoff. Assumes T3 Code and an authenticated agent provider already work on this computer.
+description: Install and configure T3 Code Assistant for Even Realities G2 on Windows, macOS, or Linux, including missing prerequisites, private Tailscale transport, local speech transcription, startup at sign-in, a personalized Even Hub package, and Android companion handoff. Assumes T3 Code and an authenticated agent provider already work on this computer.
 ---
 
-# Install T3 Code Bridge
+# Install T3 Code Assistant
 
 Complete the computer setup for the user. Do not turn this into a human terminal tutorial. Assume T3 Code is already installed; preserve its installation, projects, sessions, credentials, and provider settings. This skill also works when its text is pasted into a T3 conversation rather than installed in a skill directory.
 
 ## Locate the source and detect the host
 
-Canonical source: `https://github.com/DeeJanuz/even-t3-bridge`. Android source and signed releases: `https://github.com/DeeJanuz/even-t3-android`.
+Canonical source: `https://github.com/DeeJanuz/t3-code-assistant-bridge`. Android source and signed releases: `https://github.com/DeeJanuz/even-t3-android`.
 
 Identify the actual OS, architecture, user home, installed T3 version/server entry, and existing bridge service before changing anything. If this is an existing checkout, inspect its remote and preserve local changes. Otherwise clone the canonical repository into a stable user-owned applications/projects directory. Do not install a persistent service from a temporary folder. Use the latest non-draft beta/release tag that includes this skill, or the user's explicitly selected revision. Report the chosen revision.
 
@@ -51,7 +51,7 @@ The remaining user actions are:
 
 1. Sign into Tailscale on Android using the same tailnet.
 2. Upload the personalized `.ehpk` at `https://hub.evenrealities.com/login`, add the user's Even account to its beta group, and install the build in the Even Realities app. Prepare the artifact and assist through an available authenticated browser if requested; account login may need the user.
-3. In Even Hub's T3 Code Bridge settings, enter the **WebSocket URL** and bridge **pairing passphrase**. Configure the assistant project/model and location permission or fallback city.
+3. In Even Hub's T3 Code Assistant settings, enter the **WebSocket URL** and bridge **pairing passphrase**. Configure the assistant project/model and location permission or fallback city.
 4. Install the signed Android APK if phone-message forwarding is wanted. Allow the APK installer, enable restricted settings if Android requires it, and grant notification access to Even Phone Companion.
 5. Generate a pairing code in Even Hub → Android notifications. Enter that code and the **HTTPS bridge origin** in the Android companion, then enable desired apps in Even Hub. The Android code and the bridge passphrase are different credentials.
 6. Verify a real replyable notification, reading, dictation/review/cancel, and an intentional test reply chosen by the user. Do not send a real message merely to test installation.

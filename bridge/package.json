@@ -1,0 +1,28 @@
+{
+  "name": "even-t3-bridge",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=22.16"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "start": "node dist/src/index.js",
+    "start:t3": "npm run build && node scripts/start-with-t3.mjs",
+    "setup:whisper": "node scripts/setup-whisper.mjs",
+    "dev": "tsx watch src/index.ts",
+    "test": "tsx --test test/*.test.ts",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "dependencies": {
+    "ws": "^8.18.3"
+  },
+  "devDependencies": {
+    "@types/node": "^24.5.2",
+    "@types/ws": "^8.18.1",
+    "tsx": "^4.20.5",
+    "typescript": "^5.9.2"
+  },
+  "license": "MIT"
+}

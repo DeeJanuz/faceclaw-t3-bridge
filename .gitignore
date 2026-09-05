@@ -1,0 +1,15 @@
+node_modules/
+dist/
+.vite/
+*.ehpk
+.env
+.env.local
+bridge/.env
+bridge/.env.local
+coverage/
+artifacts/
+.DS_Store
+
+# Local tooling output
+/bin.mjs.map
+/mcpviews-init.json

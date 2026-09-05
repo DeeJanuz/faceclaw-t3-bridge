@@ -1,0 +1,567 @@
+import { randomUUID } from "node:crypto";
+import WebSocket, { type RawData } from "ws";
+import { ApiError } from "./security.js";
+import type {
+  BridgeConfig,
+  T3CatalogModel,
+  T3CatalogProvider,
+  T3Client,
+  T3Descriptor,
+  T3ModelCatalog,
+  T3ModelSelection,
+  T3NewSessionSelection,
+  T3Project,
+  T3ProviderOptionSelection,
+  T3ReasoningCatalog,
+  T3ShellSnapshot,
+  T3ThreadShell,
+  T3ThreadSnapshot,
+} from "./types.js";
+
+class UpstreamError extends Error {}
+
+async function readLimitedJson(response: Response, maximumBytes: number): Promise<unknown> {
+  const declared = Number(response.headers.get("content-length"));
+  if (Number.isFinite(declared) && declared > maximumBytes) {
+    throw new UpstreamError("upstream response exceeded the configured limit");
+  }
+  if (response.body === null) throw new UpstreamError("upstream returned an empty response");
+  const reader = response.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let size = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    size += value.byteLength;
+    if (size > maximumBytes) {
+      await reader.cancel();
+      throw new UpstreamError("upstream response exceeded the configured limit");
+    }
+    chunks.push(value);
+  }
+  const bytes = new Uint8Array(size);
+  let offset = 0;
+  for (const chunk of chunks) {
+    bytes.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  try {
+    return JSON.parse(new TextDecoder().decode(bytes));
+  } catch {
+    throw new UpstreamError("upstream returned invalid JSON");
+  }
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function hasSnapshotShape(value: unknown): value is T3ShellSnapshot {
+  return (
+    isRecord(value) &&
+    Number.isSafeInteger(value.snapshotSequence) &&
+    Array.isArray(value.projects) &&
+    Array.isArray(value.threads) &&
+    typeof value.updatedAt === "string"
+  );
+}
+
+function hasThreadShape(value: unknown): value is T3ThreadSnapshot {
+  return (
+    isRecord(value) &&
+    Number.isSafeInteger(value.snapshotSequence) &&
+    isRecord(value.thread) &&
+    typeof value.thread.id === "string" &&
+    Array.isArray(value.thread.messages)
+  );
+}
+
+function hasDescriptorShape(value: unknown): value is T3Descriptor {
+  return (
+    isRecord(value) &&
+    typeof value.environmentId === "string" &&
+    typeof value.label === "string" &&
+    typeof value.serverVersion === "string" &&
+    isRecord(value.capabilities)
+  );
+}
+
+function titleFromText(text: string): string {
+  const firstLine = text.split(/\r?\n/, 1)[0]?.trim() || "New session";
+  return firstLine.length <= 80 ? firstLine : `${firstLine.slice(0, 77).trimEnd()}...`;
+}
+
+interface ParsedCatalogModel extends T3CatalogModel {
+  readonly supportsStandardServiceTier: boolean;
+  readonly supportsFastMode: boolean;
+}
+
+interface ParsedCatalogProvider extends T3CatalogProvider {
+  readonly models: readonly ParsedCatalogModel[];
+}
+
+interface ParsedModelCatalog extends T3ModelCatalog {
+  readonly providers: readonly ParsedCatalogProvider[];
+}
+
+function requiredString(record: Record<string, unknown>, key: string): string | null {
+  const value = record[key];
+  return typeof value === "string" && value.trim().length > 0 ? value : null;
+}
+
+function reasoningCatalog(
+  driver: string,
+  capabilities: unknown,
+): T3ReasoningCatalog | null {
+  if (!isRecord(capabilities) || !Array.isArray(capabilities.optionDescriptors)) return null;
+  const preferredId = driver === "claudeAgent" ? "effort" : "reasoningEffort";
+  const descriptor = capabilities.optionDescriptors.find(
+    (candidate) =>
+      isRecord(candidate) && candidate.id === preferredId && candidate.type === "select",
+  );
+  if (!isRecord(descriptor) || !Array.isArray(descriptor.options)) return null;
+
+  const choices = descriptor.options.flatMap((candidate) => {
+    if (!isRecord(candidate)) return [];
+    const id = requiredString(candidate, "id");
+    const label = requiredString(candidate, "label");
+    if (id === null || label === null) return [];
+    return [{ id, label, isDefault: candidate.isDefault === true }];
+  });
+  if (choices.length === 0) return null;
+  const currentValue = typeof descriptor.currentValue === "string" ? descriptor.currentValue : null;
+  const defaultChoiceId =
+    choices.find((choice) => choice.isDefault)?.id ??
+    choices.find((choice) => choice.id === currentValue)?.id ??
+    null;
+  return {
+    id: "reasoning",
+    t3OptionId: preferredId,
+    choices,
+    defaultChoiceId,
+  };
+}
+
+function hasOptionDescriptor(capabilities: unknown, id: string, type: string): boolean {
+  return (
+    isRecord(capabilities) &&
+    Array.isArray(capabilities.optionDescriptors) &&
+    capabilities.optionDescriptors.some(
+      (candidate) => isRecord(candidate) && candidate.id === id && candidate.type === type,
+    )
+  );
+}
+
+function parseModelCatalog(value: unknown): ParsedModelCatalog {
+  if (!isRecord(value) || !Array.isArray(value.providers)) {
+    throw new ApiError(502, "upstream_invalid_response", "T3 Code returned an invalid response");
+  }
+
+  const providers: ParsedCatalogProvider[] = [];
+  const seenProviders = new Set<string>();
+  for (const candidate of value.providers) {
+    if (!isRecord(candidate)) {
+      throw new ApiError(502, "upstream_invalid_response", "T3 Code returned an invalid response");
+    }
+    if (
+      candidate.enabled !== true ||
+      candidate.installed !== true ||
+      candidate.availability === "unavailable" ||
+      (candidate.status !== "ready" && candidate.status !== "warning")
+    ) {
+      continue;
+    }
+    if (!isRecord(candidate.auth) || candidate.auth.status === "unauthenticated") continue;
+    const instanceId = requiredString(candidate, "instanceId");
+    const driver = requiredString(candidate, "driver");
+    if (instanceId === null || driver === null || !Array.isArray(candidate.models)) {
+      throw new ApiError(502, "upstream_invalid_response", "T3 Code returned an invalid response");
+    }
+    if (seenProviders.has(instanceId)) {
+      throw new ApiError(502, "upstream_invalid_response", "T3 Code returned an invalid response");
+    }
+    seenProviders.add(instanceId);
+
+    const models: ParsedCatalogModel[] = [];
+    const seenModels = new Set<string>();
+    for (const modelCandidate of candidate.models) {
+      if (!isRecord(modelCandidate)) {
+        throw new ApiError(502, "upstream_invalid_response", "T3 Code returned an invalid response");
+      }
+      const slug = requiredString(modelCandidate, "slug");
+      const name = requiredString(modelCandidate, "name");
+      if (slug === null || name === null || seenModels.has(slug)) {
+        throw new ApiError(502, "upstream_invalid_response", "T3 Code returned an invalid response");
+      }
+      seenModels.add(slug);
+      const capabilities = modelCandidate.capabilities;
+      models.push({
+        slug,
+        name,
+        isDefault: modelCandidate.isDefault === true,
+        reasoning: reasoningCatalog(driver, capabilities),
+        supportsStandardServiceTier: hasOptionDescriptor(capabilities, "serviceTier", "select"),
+        supportsFastMode: hasOptionDescriptor(capabilities, "fastMode", "boolean"),
+      });
+    }
+    if (models.length > 0) {
+      providers.push({
+        instanceId,
+        label: requiredString(candidate, "displayName") ?? instanceId,
+        models,
+      });
+    }
+  }
+  return { providers };
+}
+
+function publicCatalog(catalog: ParsedModelCatalog): T3ModelCatalog {
+  return {
+    providers: catalog.providers.map((provider) => ({
+      instanceId: provider.instanceId,
+      label: provider.label,
+      models: provider.models.map(
+        ({ supportsStandardServiceTier: _, supportsFastMode: __, ...model }) => model,
+      ),
+    })),
+  };
+}
+
+function websocketDataBytes(data: RawData): number {
+  if (typeof data === "string") return Buffer.byteLength(data);
+  if (Array.isArray(data)) return data.reduce((size, part) => size + part.byteLength, 0);
+  return data.byteLength;
+}
+
+function websocketDataText(data: RawData): string {
+  if (typeof data === "string") return data;
+  if (Array.isArray(data)) return Buffer.concat(data).toString("utf8");
+  return Buffer.from(data instanceof ArrayBuffer ? new Uint8Array(data) : data).toString("utf8");
+}
+
+export class HttpT3Client implements T3Client {
+  constructor(private readonly config: BridgeConfig) {
+    if (!config.t3AccessToken) throw new ApiError(503, "upstream_unavailable", "T3 Code is unavailable");
+  }
+
+  private async request(path: string, init?: RequestInit): Promise<unknown> {
+    const url = new URL(path, this.config.t3BaseUrl);
+    let response: Response;
+    try {
+      response = await fetch(url, {
+        ...init,
+        headers: {
+          Accept: "application/json",
+          Authorization: `Bearer ${this.config.t3AccessToken}`,
+          ...(init?.body === undefined ? {} : { "Content-Type": "application/json" }),
+          ...init?.headers,
+        },
+        redirect: "error",
+        signal: AbortSignal.timeout(this.config.upstreamTimeoutMs),
+      });
+    } catch {
+      throw new ApiError(502, "upstream_unavailable", "T3 Code is unavailable");
+    }
+    const value = await readLimitedJson(response, this.config.maxUpstreamBytes).catch(() => {
+      throw new ApiError(502, "upstream_invalid_response", "T3 Code returned an invalid response");
+    });
+    if (!response.ok) {
+      if (response.status === 401 || response.status === 403) {
+        throw new ApiError(502, "upstream_auth_failed", "T3 Code authorization failed");
+      }
+      throw new ApiError(502, "upstream_operation_failed", "T3 Code rejected the operation");
+    }
+    return value;
+  }
+
+  async descriptor(): Promise<T3Descriptor> {
+    const value = await this.request("/.well-known/t3/environment");
+    if (!hasDescriptorShape(value)) {
+      throw new ApiError(502, "upstream_incompatible", "T3 Code is not compatible with this bridge");
+    }
+    return value;
+  }
+
+  async shell(): Promise<T3ShellSnapshot> {
+    const value = await this.request("/api/orchestration/shell");
+    if (!hasSnapshotShape(value)) {
+      throw new ApiError(502, "upstream_incompatible", "T3 Code is not compatible with this bridge");
+    }
+    return value;
+  }
+
+  async thread(threadId: string): Promise<T3ThreadSnapshot> {
+    const value = await this.request(`/api/orchestration/threads/${encodeURIComponent(threadId)}`);
+    if (!hasThreadShape(value)) {
+      throw new ApiError(502, "upstream_incompatible", "T3 Code is not compatible with this bridge");
+    }
+    return value;
+  }
+
+  async threadPage(threadId: string, beforeCursor?: string): Promise<T3ThreadSnapshot> {
+    const query = new URLSearchParams({ turnLimit: "100" });
+    if (beforeCursor !== undefined) query.set("beforeCursor", beforeCursor);
+    const value = await this.request(`/api/orchestration/threads/${encodeURIComponent(threadId)}?${query}`);
+    if (!hasThreadShape(value) || !isRecord(value.page) ||
+        typeof value.page.hasMore !== "boolean" ||
+        !(value.page.beforeCursor === null || typeof value.page.beforeCursor === "string") ||
+        !Number.isSafeInteger(value.page.snapshotSequence)) {
+      throw new ApiError(502, "upstream_incompatible", "T3 Code pagination is unavailable");
+    }
+    return value;
+  }
+
+  async modelCatalog(): Promise<T3ModelCatalog> {
+    return publicCatalog(await this.readModelCatalog());
+  }
+
+  private async readModelCatalog(): Promise<ParsedModelCatalog> {
+    const requestId = randomUUID();
+    const url = new URL("/ws", this.config.t3BaseUrl);
+    url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
+    const maximumBytes = this.config.maxUpstreamBytes;
+    const timeoutMs = this.config.upstreamTimeoutMs;
+
+    const value = await new Promise<unknown>((resolve, reject) => {
+      let settled = false;
+      const socket = new WebSocket(url, {
+        headers: { Authorization: `Bearer ${this.config.t3AccessToken}` },
+        followRedirects: false,
+        handshakeTimeout: timeoutMs,
+        maxPayload: maximumBytes,
+        perMessageDeflate: false,
+      });
+      const finish = (result: { value: unknown } | { error: ApiError }) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        socket.removeAllListeners();
+        socket.once("error", () => undefined);
+        if (socket.readyState === WebSocket.OPEN) socket.close();
+        else if (socket.readyState === WebSocket.CONNECTING) socket.terminate();
+        if ("error" in result) reject(result.error);
+        else resolve(result.value);
+      };
+      const timer = setTimeout(() => {
+        socket.terminate();
+        finish({ error: new ApiError(502, "upstream_timeout", "T3 Code did not respond in time") });
+      }, timeoutMs);
+      timer.unref();
+
+      socket.once("open", () => {
+        socket.send(
+          JSON.stringify({
+            _tag: "Request",
+            id: requestId,
+            tag: "server.getConfig",
+            payload: {},
+            headers: [],
+          }),
+          (error) => {
+            if (error) {
+              finish({ error: new ApiError(502, "upstream_unavailable", "T3 Code is unavailable") });
+            }
+          },
+        );
+      });
+      socket.once("unexpected-response", (_request, response) => {
+        response.resume();
+        const authFailure = response.statusCode === 401 || response.statusCode === 403;
+        finish({
+          error: authFailure
+            ? new ApiError(502, "upstream_auth_failed", "T3 Code authorization failed")
+            : new ApiError(502, "upstream_unavailable", "T3 Code is unavailable"),
+        });
+      });
+      socket.on("message", (data, isBinary) => {
+        if (isBinary || websocketDataBytes(data) > maximumBytes) {
+          finish({ error: new ApiError(502, "upstream_invalid_response", "T3 Code returned an invalid response") });
+          return;
+        }
+        let response: unknown;
+        try {
+          response = JSON.parse(websocketDataText(data));
+        } catch {
+          finish({ error: new ApiError(502, "upstream_invalid_response", "T3 Code returned an invalid response") });
+          return;
+        }
+        if (!isRecord(response) || response._tag !== "Exit" || response.requestId !== requestId) {
+          finish({ error: new ApiError(502, "upstream_invalid_response", "T3 Code returned an invalid response") });
+          return;
+        }
+        if (!isRecord(response.exit) || response.exit._tag !== "Success" || !("value" in response.exit)) {
+          finish({ error: new ApiError(502, "upstream_operation_failed", "T3 Code rejected the operation") });
+          return;
+        }
+        finish({ value: response.exit.value });
+      });
+      socket.once("error", (error: Error & { code?: string }) => {
+        finish({
+          error:
+            error.code === "WS_ERR_UNSUPPORTED_MESSAGE_LENGTH"
+              ? new ApiError(502, "upstream_invalid_response", "T3 Code returned an invalid response")
+              : new ApiError(502, "upstream_unavailable", "T3 Code is unavailable"),
+        });
+      });
+      socket.once("close", () => {
+        finish({ error: new ApiError(502, "upstream_unavailable", "T3 Code is unavailable") });
+      });
+    });
+    return parseModelCatalog(value);
+  }
+
+  async startSession(input: {
+    readonly project: T3Project;
+    readonly threadId: string;
+    readonly text: string;
+    readonly runtimeMode: BridgeConfig["runtimeMode"];
+    readonly selection?: T3NewSessionSelection;
+  }): Promise<{ readonly sequence: number }> {
+    if (input.project.defaultModelSelection === null && input.selection === undefined) {
+      throw new ApiError(
+        409,
+        "project_model_required",
+        "Choose a default model for this project in T3 Code first",
+      );
+    }
+    const requested = input.selection ?? {
+      instanceId: input.project.defaultModelSelection!.instanceId,
+      model: input.project.defaultModelSelection!.model,
+    };
+    const catalog = await this.readModelCatalog();
+    const provider = catalog.providers.find((candidate) => candidate.instanceId === requested.instanceId);
+    if (provider === undefined) {
+      throw new ApiError(409, "provider_selection_unavailable", "The selected provider is not available in T3 Code");
+    }
+    const model = provider.models.find((candidate) => candidate.slug === requested.model);
+    if (model === undefined) {
+      throw new ApiError(409, "model_selection_unavailable", "The selected model is not available in T3 Code");
+    }
+    const options: T3ProviderOptionSelection[] = [];
+    if (model.reasoning !== null) {
+      const reasoningId = requested.reasoningId ?? model.reasoning.defaultChoiceId;
+      if (reasoningId !== null) {
+        if (!model.reasoning.choices.some((choice) => choice.id === reasoningId)) {
+          throw new ApiError(409, "reasoning_selection_unavailable", "The selected reasoning level is not available for this model");
+        }
+        options.push({ id: model.reasoning.t3OptionId, value: reasoningId });
+      }
+    } else if (requested.reasoningId !== undefined) {
+      throw new ApiError(409, "reasoning_selection_unavailable", "This model does not support reasoning levels");
+    }
+    if (model.supportsStandardServiceTier) options.push({ id: "serviceTier", value: "default" });
+    if (model.supportsFastMode) options.push({ id: "fastMode", value: false });
+    const modelSelection: T3ModelSelection = {
+      instanceId: provider.instanceId,
+      model: model.slug,
+      ...(options.length > 0 ? { options } : {}),
+    };
+
+    const now = new Date().toISOString();
+    await this.dispatch({
+      type: "thread.create",
+      commandId: randomUUID(),
+      threadId: input.threadId,
+      projectId: input.project.id,
+      title: titleFromText(input.text),
+      modelSelection,
+      runtimeMode: input.runtimeMode,
+      interactionMode: "default",
+      branch: null,
+      worktreePath: null,
+      createdAt: now,
+    });
+    return this.dispatch({
+      type: "thread.turn.start",
+      commandId: randomUUID(),
+      threadId: input.threadId,
+      message: {
+        messageId: randomUUID(),
+        role: "user",
+        text: input.text,
+        attachments: [],
+      },
+      runtimeMode: input.runtimeMode,
+      interactionMode: "default",
+      createdAt: now,
+    });
+  }
+
+  async sendMessage(input: {
+    readonly thread: T3ThreadShell;
+    readonly text: string;
+  }): Promise<{ readonly sequence: number }> {
+    const now = new Date().toISOString();
+    return this.dispatch({
+      type: "thread.turn.start",
+      commandId: randomUUID(),
+      threadId: input.thread.id,
+      message: {
+        messageId: randomUUID(),
+        role: "user",
+        text: input.text,
+        attachments: [],
+      },
+      runtimeMode: input.thread.runtimeMode,
+      interactionMode: input.thread.interactionMode,
+      createdAt: now,
+    });
+  }
+
+  async steerMessage(input: {
+    readonly thread: T3ThreadShell;
+    readonly text: string;
+  }): Promise<{ readonly sequence: number }> {
+    // T3's orchestration API uses thread.turn.start for both a fresh turn and
+    // same-turn steering. When the provider has an active turn, its adapter
+    // queues this message into that turn rather than opening a second one.
+    const now = new Date().toISOString();
+    return this.dispatch({
+      type: "thread.turn.start",
+      commandId: randomUUID(),
+      threadId: input.thread.id,
+      message: {
+        messageId: randomUUID(),
+        role: "user",
+        text: input.text,
+        attachments: [],
+      },
+      runtimeMode: input.thread.runtimeMode,
+      interactionMode: input.thread.interactionMode,
+      createdAt: now,
+    });
+  }
+
+  async settleThread(threadId: string): Promise<{ readonly sequence: number }> {
+    // T3 enforces running/queued-turn and blocking-request checks atomically.
+    // Do not replace this command with a metadata write or auto-settlement.
+    return this.dispatch({ type: "thread.settle", commandId: randomUUID(), threadId });
+  }
+
+  async respondToPlanInput(input: {
+    readonly threadId: string;
+    readonly requestId: string;
+    readonly commandId: string;
+    readonly answers: Readonly<Record<string, string | string[]>>;
+  }): Promise<{ readonly sequence: number }> {
+    return this.dispatch({
+      type: "thread.user-input.respond",
+      commandId: input.commandId,
+      threadId: input.threadId,
+      requestId: input.requestId,
+      answers: input.answers,
+      createdAt: new Date().toISOString(),
+    });
+  }
+
+  private async dispatch(command: Record<string, unknown>): Promise<{ readonly sequence: number }> {
+    const value = await this.request("/api/orchestration/dispatch", {
+      method: "POST",
+      body: JSON.stringify(command),
+    });
+    if (!isRecord(value) || !Number.isSafeInteger(value.sequence)) {
+      throw new ApiError(502, "upstream_invalid_response", "T3 Code returned an invalid response");
+    }
+    return { sequence: value.sequence as number };
+  }
+}

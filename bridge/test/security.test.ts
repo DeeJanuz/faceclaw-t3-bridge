@@ -1134,6 +1134,24 @@ describe("normalization", () => {
     assert.equal(result.unsettled.some((value) => value.id === "hidden"), false);
   });
 
+  it("orders projects by latest user interaction, ignoring completion and metadata edits", () => {
+    const projects = ['old', 'recent', 'empty', 'tie'].map((id) => ({ ...project, id, title: id,
+      updatedAt: '2026-09-09T00:00:00Z' }));
+    const threads = [
+      { ...thread('old-thread', '2026-09-08T00:00:00Z'), projectId: 'old',
+        latestUserMessageAt: '2026-09-03T00:00:00Z', latestTurn: { turnId: 'old-turn', state: 'completed',
+          requestedAt: '2026-09-03T00:00:00Z', startedAt: '2026-09-03T00:00:00Z', completedAt: '2026-09-08T00:00:00Z' } },
+      { ...thread('recent-thread', '2026-09-04T00:00:00Z'), projectId: 'recent',
+        latestUserMessageAt: '2026-09-05T00:00:00Z', latestTurn: null },
+      { ...thread('tie-thread', '2026-09-04T00:00:00Z'), projectId: 'tie',
+        latestUserMessageAt: '2026-09-05T00:00:00Z', latestTurn: null },
+    ];
+    assert.deepEqual(normalizeProjects({ ...shell, projects, threads }, config()).map(p => p.id),
+      ['recent', 'tie', 'old', 'empty']);
+    assert.deepEqual(normalizeProjects({ ...shell, projects, threads }, config({ projectIds: new Set(['old', 'empty']) })).map(p => p.id),
+      ['old', 'empty']);
+  });
+
   it("allows a visible project to start with a chosen live model without a stored default", () => {
     const withoutDefault = { ...project, defaultModelSelection: null };
     const result = normalizeProjects(
@@ -1723,7 +1741,7 @@ describe("WebSocket RPC and voice boundary", () => {
     assert.equal(sent.ok, true);
     assert.equal(client.starts.length, 1);
     assert.equal(client.starts[0]?.text, "dictated request");
-    assert.equal(client.starts[0]?.runtimeMode, "approval-required");
+    assert.equal(client.starts[0]?.runtimeMode, "full-access");
     assert.deepEqual(client.starts[0]?.selection, {
       instanceId: "codex",
       model: "gpt-5.6-sol",
@@ -1732,21 +1750,104 @@ describe("WebSocket RPC and voice boundary", () => {
     socket.close();
   });
 
-  it("uses full access only for explicit assistant creation and preserves existing thread permissions", async () => {
+  it("discards absent or short audio so the next recording can start without a cancel", async () => {
+    const { base, client, transcriber } = await startServer();
+    const socket = await openSocket(base);
+    for (const bytes of [0, 100]) {
+      assert.equal((await rpc(socket, `start-${bytes}`, "voice.start", {})).ok, true);
+      if (bytes) socket.send(Buffer.alloc(bytes, 7), { binary: true });
+      const finished = await rpc(socket, `finish-${bytes}`, "voice.finish", {});
+      assert.equal(finished.ok, false);
+      assert.equal((finished.error as { code: string }).code, "no_speech");
+      assert.deepEqual((await rpc(socket, `cancel-${bytes}`, "voice.cancel", {})).result, { cancelled: false });
+    }
+    assert.equal((await rpc(socket, "retry", "voice.start", {})).ok, true);
+    assert.equal(transcriber.calls, 0);
+    assert.equal(client.starts.length + client.sends.length + client.steers.length, 0);
+    socket.close();
+  });
+
+  it("rejects blank transcription and wipes the recording before another attempt", async () => {
+    const { base, client, transcriber } = await startServer();
+    let captured: readonly Buffer[] = [];
+    transcriber.transcribe = async (pcm) => { captured = [...pcm]; return " \n\t "; };
+    const socket = await openSocket(base);
+    await rpc(socket, "start", "voice.start", {});
+    socket.send(Buffer.alloc(3200, 7), { binary: true });
+    const finished = await rpc(socket, "finish", "voice.finish", {});
+    assert.equal(finished.ok, false);
+    assert.equal((finished.error as { code: string }).code, "no_speech");
+    assert.equal(captured.length, 1);
+    assert.deepEqual(captured[0], Buffer.alloc(3200));
+    assert.equal((await rpc(socket, "retry", "voice.start", {})).ok, true);
+    assert.equal(client.starts.length + client.sends.length + client.steers.length, 0);
+    socket.close();
+  });
+
+  it("rejects empty text at every T3 send boundary even if the client bypasses draft checks", async () => {
     const { base, client } = await startServer();
     const socket = await openSocket(base);
-    const params = { projectId: project.id, text: "Explicitly sent assistant draft",
-      modelSelection: { instanceId: "codex", model: "gpt-5.6-sol", reasoningId: "medium" } };
-    assert.equal((await rpc(socket, "assistant", "assistant.start", params)).ok, true);
-    assert.equal(client.starts.length, 1);
-    assert.equal(client.starts[0]?.runtimeMode, "full-access");
-    assert.deepEqual(client.starts[0]?.selection, params.modelSelection);
-    assert.equal(client.starts[0]?.project.id, project.id);
-    assert.equal((await rpc(socket, "ordinary", "thread.start", { ...params, runtimeMode: "full-access" })).ok, true);
-    assert.equal(client.starts[1]?.runtimeMode, "approval-required");
-    assert.equal((await rpc(socket, "followup", "turn.send", { threadId: "older", text: "Follow up", runtimeMode: "full-access" })).ok, true);
-    assert.equal(client.sends[0]?.thread.runtimeMode, "approval-required");
+    const before = client.shellCalls;
+    for (const method of ["thread.start", "assistant.start", "turn.send", "turn.steer"]) {
+      const params = method.endsWith(".start")
+        ? { projectId: project.id, modelSelection: { instanceId: "codex", model: "gpt-5.6-sol" }, text: " \n\t " }
+        : { threadId: "older", text: " \n\t " };
+      const result = await rpc(socket, method, method, params);
+      assert.equal(result.ok, false);
+      assert.equal((result.error as { code: string }).code, "invalid_request");
+    }
+    assert.equal(client.shellCalls, before);
+    assert.equal(client.starts.length + client.sends.length + client.steers.length, 0);
     socket.close();
+  });
+
+  it("starts every new session with full access regardless of legacy config and preserves existing thread permissions", async () => {
+    for (const runtimeMode of ["approval-required", "auto-accept-edits", "auto", "full-access"] as const) {
+      const { base, client } = await startServer(new FakeT3Client(), new FakeTranscriber(), { runtimeMode });
+      const socket = await openSocket(base);
+      const params = { projectId: project.id, text: "Explicitly sent draft",
+        modelSelection: { instanceId: "codex", model: "gpt-5.6-sol", reasoningId: "medium" } };
+      for (const method of ["assistant.start", "thread.start"]) {
+        assert.equal((await rpc(socket, method, method, params)).ok, true);
+      }
+      // Older ordinary clients may send a mode; it cannot override the server policy.
+      assert.equal((await rpc(socket, "override", "thread.start", { ...params, runtimeMode: "approval-required" })).ok, true);
+      const http = await fetch(`${base}/v1/sessions`, {
+        method: "POST",
+        headers: { Origin: ORIGIN, Authorization: `Bearer ${BRIDGE_TOKEN}`, "Content-Type": "application/json" },
+        body: JSON.stringify({ ...params, runtimeMode: "approval-required" }),
+      });
+      assert.equal(http.status, 201);
+      await http.json();
+      assert.equal(client.starts.length, 4);
+      for (const started of client.starts) {
+        assert.equal(started.runtimeMode, "full-access");
+        assert.deepEqual(started.selection, params.modelSelection);
+        assert.equal(started.project.id, project.id);
+      }
+      assert.equal((await rpc(socket, "followup", "turn.send", { threadId: "older", text: "Follow up", runtimeMode: "full-access" })).ok, true);
+      assert.equal(client.sends[0]?.thread.runtimeMode, "approval-required");
+      socket.close();
+    }
+  });
+
+  it("rejects unauthenticated and disallowed-origin HTTP session creation before any T3 access", async () => {
+    const { base, client } = await startServer();
+    for (const [headers, expectedStatus] of [
+      [{ Origin: ORIGIN }, 401],
+      [{ Origin: "https://attacker.example", Authorization: `Bearer ${BRIDGE_TOKEN}` }, 403],
+    ] as const) {
+      const response = await fetch(`${base}/v1/sessions`, {
+        method: "POST",
+        headers: { ...headers, "Content-Type": "application/json" },
+        body: JSON.stringify({ projectId: project.id, text: "Do not send",
+          modelSelection: { instanceId: "codex", model: "gpt-5.6-sol" } }),
+      });
+      assert.equal(response.status, expectedStatus);
+      await response.json();
+    }
+    assert.equal(client.shellCalls, 0);
+    assert.equal(client.starts.length, 0);
   });
 
   it("rejects assistant permission overrides, malformed selections, and empty drafts before any T3 access", async () => {
@@ -1768,17 +1869,27 @@ describe("WebSocket RPC and voice boundary", () => {
     socket.close();
   });
 
-  it("retains project allowlisting and rejects deleted or missing assistant projects", async () => {
+  it("retains project allowlisting and rejects deleted or missing projects for every new session route", async () => {
     for (const blocked of ["allowlist", "deleted", "missing"] as const) {
       const client = new FakeT3Client({ ...shell, projects: blocked === "deleted"
         ? [{ ...project, deletedAt: "2026-09-05T00:00:00.000Z" }] : blocked === "missing" ? [] : [project] });
       const { base } = await startServer(client, new FakeTranscriber(),
         blocked === "allowlist" ? { projectIds: new Set(["another-project"]) } : {});
       const socket = await openSocket(base);
-      const result = await rpc(socket, blocked, "assistant.start", { projectId: project.id, text: "Do not send",
-        modelSelection: { instanceId: "codex", model: "gpt-5.6-sol" } });
-      assert.equal(result.ok, false);
-      assert.deepEqual(result.error, { code: "not_found", message: "Project not found" });
+      const params = { projectId: project.id, text: "Do not send",
+        modelSelection: { instanceId: "codex", model: "gpt-5.6-sol" } };
+      for (const method of ["assistant.start", "thread.start"]) {
+        const result = await rpc(socket, `${blocked}-${method}`, method, params);
+        assert.equal(result.ok, false);
+        assert.deepEqual(result.error, { code: "not_found", message: "Project not found" });
+      }
+      const response = await fetch(`${base}/v1/sessions`, {
+        method: "POST",
+        headers: { Origin: ORIGIN, Authorization: `Bearer ${BRIDGE_TOKEN}`, "Content-Type": "application/json" },
+        body: JSON.stringify(params),
+      });
+      assert.equal(response.status, 404);
+      await response.json();
       assert.equal(client.starts.length, 0);
       socket.close();
     }
@@ -1987,6 +2098,29 @@ describe("WAV encoding", () => {
 });
 
 describe("local Whisper boundary", () => {
+  it("rejects empty, silent, and stuck PCM without letting Whisper invent a draft", async () => {
+    let requests = 0;
+    const whisperServerUrl = await startLocalWhisper((_request, response) => {
+      requests += 1;
+      response.end(JSON.stringify({ text: "Invented speech" }));
+    });
+    const transcriber = new WhisperCppTranscriber(config({ whisperServerUrl }));
+    for (const pcm of [[], [Buffer.alloc(3200)], [Buffer.alloc(1600, 7), Buffer.alloc(1600, 7)]]) {
+      const originals = pcm.map((chunk) => Buffer.from(chunk));
+      await assert.rejects(transcriber.transcribe(pcm, new AbortController().signal), { code: "no_speech" });
+      assert.deepEqual(pcm, originals);
+    }
+    assert.equal(requests, 0);
+  });
+
+  it("rejects whitespace-only Whisper output for a changing audio signal", async () => {
+    const whisperServerUrl = await startLocalWhisper((_request, response) => {
+      response.end(JSON.stringify({ text: " \n\t " }));
+    });
+    const transcriber = new WhisperCppTranscriber(config({ whisperServerUrl }));
+    await assert.rejects(transcriber.transcribe([Buffer.from([0, 0, 1, 0])], new AbortController().signal), { code: "no_speech" });
+  });
+
   it("sends only bounded WAV to loopback and accepts a bounded JSON draft", async () => {
     let requestBody = Buffer.alloc(0);
     const whisperServerUrl = await startLocalWhisper((request, response) => {
@@ -2002,12 +2136,13 @@ describe("local Whisper boundary", () => {
         response.end(JSON.stringify({ text: "  local draft  " }));
       });
     });
-    const pcm = Buffer.alloc(3200, 7);
+    const pcm = Buffer.alloc(3200);
+    pcm.writeInt16LE(1, 100); // Changing signal at very low amplitude remains eligible.
     const transcriber = new WhisperCppTranscriber(config({ whisperServerUrl }));
     const text = await transcriber.transcribe([pcm], new AbortController().signal);
     assert.equal(text, "local draft");
     assert.equal(requestBody.includes(Buffer.from("RIFF")), true);
-    assert.deepEqual(pcm, Buffer.alloc(3200, 7));
+    assert.equal(pcm.readInt16LE(100), 1);
   });
 
   it("maps cancellation to a safe error without returning the local server response", async () => {

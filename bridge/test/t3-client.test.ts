@@ -180,7 +180,7 @@ function project(defaultModelSelection: T3Project["defaultModelSelection"] = {
 }
 
 describe("HttpT3Client session creation", () => {
-  it("uses full access on both assistant creation commands", async () => {
+  it("uses full access on both new-session creation commands", async () => {
     const commands: Record<string, unknown>[] = [];
     const baseUrl = await startUpstream(async (request, response) => {
       assert.equal(request.headers.authorization, `Bearer ${T3_ACCESS_TOKEN}`);

@@ -92,7 +92,7 @@ export function notificationCards(state: NotificationState, sessions: readonly S
 export function dashboardCards(state: NotificationState, _sessions: readonly SessionSummary[], testCount = 0): DashboardCard[] {
   const count = state.unread.length + testCount
   return [
-    { key: 'notifications', title: `Notifications (${count})`, body: '',
+    { key: 'notifications', title: `Notifications ${count}`, body: '',
       action: { kind: 'notifications' as const } },
     { key: 'assistant', title: 'Ask assistant', body: '', action: { kind: 'assistant' } },
     { key: 'sessions', title: 'Sessions', body: '', action: { kind: 'sessions' } },

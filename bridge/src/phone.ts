@@ -1,5 +1,6 @@
 import { createHash, createHmac, randomBytes } from 'node:crypto';
 import { ApiError, secretMatches } from './security.js';
+import { WakeRelay, type WakeSession } from './wake-relay.js';
 
 export interface PhoneApp { packageName: string; name: string; replyObserved: boolean; enabled: boolean }
 export interface PhoneNotification {
@@ -55,11 +56,15 @@ export class PhoneService {
   private readonly pending = new Map<string, Pending>();
   private readonly remembered = new Map<string, Remembered>();
   private readonly timer: ReturnType<typeof setInterval>;
+  private readonly wakeRelay = new WakeRelay();
+  private wakeRelayEnabled = false;
+  private wakePolling = false;
   constructor(bridgeToken: string, private readonly changed: (snapshot: PhoneSnapshot) => void,
-    private readonly disconnectMs = 6000, private readonly commandMs = 10_000) {
+    private readonly disconnectMs = 6000, private readonly commandMs = 10_000,
+    private readonly wakeSessions?: () => Promise<readonly WakeSession[]>) {
     // Domain separation: possession of a native token cannot authenticate browser/T3 routes.
     this.token = createHmac('sha256', bridgeToken).update('even-phone-native-v1').digest('base64url');
-    this.timer = setInterval(() => this.checkConnection(), Math.min(disconnectMs, 1000));
+    this.timer = setInterval(() => { this.checkConnection(); void this.pollWake(); }, Math.min(disconnectMs, 1000));
     this.timer.unref();
   }
   authenticated(token: string | undefined): boolean { return secretMatches(token, this.token); }
@@ -94,13 +99,27 @@ export class PhoneService {
   private checkConnection(): void {
     this.pruneReceipts(this.commandNow());
     if (this.state.connected && Date.now() - this.lastSync >= this.disconnectMs) {
+      this.wakeRelay.reset();
       this.publish({ ...this.state, connected: false });
       for (const id of this.pending.keys()) this.finish(id, 'unknown');
     }
   }
-  sync(body: Record<string, unknown>): { v: 1; enabledPackages: string[]; commands: Command[] } {
+  private async pollWake(): Promise<void> {
+    if (this.wakePolling || !this.wakeRelayEnabled || !this.state.connected || !this.wakeSessions) return;
+    this.wakePolling = true;
+    const generation = this.wakeRelay.generation;
+    try {
+      const sessions = await this.wakeSessions();
+      // An in-flight read must not cross disconnect, opt-out or baseline reset.
+      this.checkConnection();
+      if (this.wakeRelayEnabled && this.state.connected && this.wakeRelay.generation === generation) this.wakeRelay.sessions(sessions);
+    } catch { if (this.wakeRelay.generation === generation) this.wakeRelay.resetSessions(); }
+    finally { this.wakePolling = false; }
+  }
+  sync(body: Record<string, unknown>) {
     if (body.v !== 1) invalid();
     const permissionGranted = boolean(body.permissionGranted);
+    const wakeRelayEnabled = body.wakeRelayEnabled === undefined ? false : boolean(body.wakeRelayEnabled);
     const enabled = unique(list(body.enabledPackages, 2048).map(packageName), value => value);
     const apps = unique(list(body.apps, 2048).map(value => {
       const app = object(value);
@@ -129,12 +148,17 @@ export class PhoneService {
       return { id, status: result.status as Status };
     }), value => value.id);
     // Complete validation happens before any state change, including result resolution.
+    this.checkConnection();
+    if (!this.state.connected || this.wakeRelayEnabled !== wakeRelayEnabled) this.wakeRelay.reset();
+    this.wakeRelayEnabled = wakeRelayEnabled;
+    if (this.state.permissionGranted !== permissionGranted) this.wakeRelay.resetPhone();
     if (this.enabled === null) this.enabled = new Set(enabled.filter(name => packages.has(name)));
     for (const app of apps) app.enabled = this.enabled.has(app.packageName);
     this.lastSync = Date.now();
     this.publish({ connected: true, permissionGranted, apps,
       notifications: permissionGranted ? notifications.filter(item => this.enabled!.has(item.packageName))
         .sort((a, b) => b.arrivedAt - a.arrivedAt || a.key.localeCompare(b.key)) : [] });
+    if (this.wakeRelayEnabled) this.wakeRelay.phone(this.state.notifications);
     for (const result of results) {
       const pending = this.pending.get(result.id);
       // Native may only acknowledge an actually delivered command of the proper kind.
@@ -151,7 +175,8 @@ export class PhoneService {
       pending.delivered = true; // Before HTTP response: a lost response is unknown, never replayed.
       commands.push({ ...pending.command });
     }
-    return { v: 1, enabledPackages: [...this.enabled], commands };
+    return { v: 1 as const, enabledPackages: [...this.enabled], commands,
+      ...(body.wakeRelayEnabled !== undefined ? { wakeEvents: this.wakeRelayEnabled ? this.wakeRelay.drain() : [] } : {}) };
   }
   setEnabled(params: Record<string, unknown>): PhoneSnapshot {
     const name = packageName(params.packageName);
@@ -159,6 +184,7 @@ export class PhoneService {
     this.checkConnection();
     if (!this.state.connected) throw new ApiError(409, 'phone_disconnected', 'Phone disconnected');
     if (!this.state.apps.some(app => app.packageName === name)) throw new ApiError(404, 'app_unavailable', 'App is unavailable');
+    this.wakeRelay.resetPhone();
     if (enabled) this.enabled!.add(name); else this.enabled!.delete(name);
     this.publish({ ...this.state, apps: this.state.apps.map(app => app.packageName === name ? { ...app, enabled } : app),
       notifications: this.state.notifications.filter(item => item.packageName !== name || enabled) });
@@ -216,6 +242,8 @@ export class PhoneService {
   }
   close(): void {
     clearInterval(this.timer);
+    this.wakeRelayEnabled = false;
+    this.wakeRelay.reset();
     for (const id of this.pending.keys()) this.finish(id, 'unknown');
     this.state = { connected: false, permissionGranted: false, apps: [], notifications: [] };
   }

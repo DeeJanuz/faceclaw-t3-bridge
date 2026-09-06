@@ -83,6 +83,13 @@ export function findThread(
 }
 
 export function normalizeProjects(snapshot: T3ShellSnapshot, config: BridgeConfig) {
+  const interactedAt = new Map<string, number>();
+  for (const thread of snapshot.threads) {
+    // User activity, not assistant completion or project metadata edits, determines recency.
+    const at = validTime(latestIso(thread.latestUserMessageAt, thread.latestTurn?.requestedAt))
+      ?? validTime(thread.createdAt) ?? 0;
+    interactedAt.set(thread.projectId, Math.max(interactedAt.get(thread.projectId) ?? 0, at));
+  }
   return snapshot.projects
     .filter((project) => project.deletedAt == null && projectAllowed(project.id, config))
     .map((project) => ({
@@ -91,7 +98,8 @@ export function normalizeProjects(snapshot: T3ShellSnapshot, config: BridgeConfi
       canStartSession: true,
       updatedAt: project.updatedAt,
     }))
-    .sort((left, right) => left.title.localeCompare(right.title) || left.id.localeCompare(right.id));
+    .sort((left, right) => (interactedAt.get(right.id) ?? 0) - (interactedAt.get(left.id) ?? 0)
+      || left.title.localeCompare(right.title) || left.id.localeCompare(right.id));
 }
 
 export function completedTurn(thread: T3ThreadShell): { id: string; completedAt: string } | null {

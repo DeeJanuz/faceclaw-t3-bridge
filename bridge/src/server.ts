@@ -464,7 +464,6 @@ async function startThread(
   projectId: string,
   text: string,
   selection: T3NewSessionSelection,
-  runtimeMode: BridgeConfig["runtimeMode"] = config.runtimeMode,
 ) {
   const shell = await client.shell();
   const project = findProject(shell, projectId, config);
@@ -473,7 +472,9 @@ async function startThread(
     project,
     threadId,
     text,
-    runtimeMode,
+    // All new app sessions use the owner's full-access policy, including
+    // their first turn. Existing-thread sends retain the thread's own mode.
+    runtimeMode: "full-access",
     selection,
   });
   return { threadId, text, sequence: result.sequence };
@@ -569,8 +570,8 @@ async function routeRpc(
     }
     case "assistant.start":
     case "thread.start": {
-      // This distinct authenticated method is the full-access opt-in. Never
-      // accept client-supplied permissions or silently fall back on old bridges.
+      // Keep assistant requests strict; new-session permissions are selected
+      // by the server, never supplied by the client.
       if (request.method === "assistant.start" && Object.keys(request.params).some(
         (key) => !["projectId", "modelSelection", "text"].includes(key),
       )) {
@@ -584,7 +585,6 @@ async function routeRpc(
         projectId,
         parseText(request.params, config.maxTextChars),
         selection,
-        request.method === "assistant.start" ? "full-access" : config.runtimeMode,
       );
     }
     case "thread.settle": {
@@ -670,9 +670,6 @@ async function routeRpc(
       if (recording === null || recording.phase !== "recording") {
         throw new ApiError(409, "voice_not_active", "Dictation is not active");
       }
-      if (recording.bytes < MIN_VOICE_BYTES) {
-        throw new ApiError(422, "no_speech", "Dictation is too short");
-      }
       recording.phase = "finishing";
       if (recording.partialTimer !== null) {
         clearInterval(recording.partialTimer);
@@ -681,6 +678,9 @@ async function routeRpc(
       recording.partialAbortController?.abort();
       recording.partialAbortController = null;
       try {
+        if (recording.bytes < MIN_VOICE_BYTES) {
+          throw new ApiError(422, "no_speech", "Dictation is too short");
+        }
         if (recording.abortController.signal.aborted) {
           throw new ApiError(409, "voice_cancelled", "Dictation was cancelled");
         }
@@ -691,7 +691,8 @@ async function routeRpc(
         if (recording.abortController.signal.aborted) {
           throw new ApiError(409, "voice_cancelled", "Dictation was cancelled");
         }
-        return { text };
+        if (!text.trim()) throw new ApiError(422, "no_speech", "No speech was detected");
+        return { text: text.trim() };
       } finally {
         wipeRecording(recording);
         if (state.voice === recording) state.voice = null;
@@ -866,7 +867,10 @@ export function createBridgeServer(
     PAIRING_WINDOW_MS,
   );
   const events = new EventHub(client, config);
-  const phone = new PhoneService(config.bridgeToken, (snapshot) => events.phoneChanged(snapshot));
+  const phone = new PhoneService(config.bridgeToken, (snapshot) => events.phoneChanged(snapshot), 6000, 10_000, async () => {
+    // Native wake relays receive no titles, transcripts, project paths or T3 action authority.
+    return normalizeSessions(await client.shell(), config).unsettled;
+  });
   const phoneLimiter = new FixedWindowRateLimiter(240);
   const archive = new AssistantArchive(config, client, (status) => events.archiveStatus(status));
   const weather = new WeatherService();

@@ -1,8 +1,7 @@
 import { buildGlassesPage, type GlassesFrame } from './glasses-display'
-import { composeDashboardTiles, isDashboardLayer } from './dashboard-overlay'
-import { panelTiles, renderDashboardPanel } from './dashboard-panel'
 import { OS_NOTIFICATION, OS_NOTIFICATION_CLOSED, OS_MOTION_DURATION_MS, type OsRect } from './os-layout'
 import { fitLines } from './dashboard'
+import { CLOCK_IMAGE, clockImageState, renderClockPixels } from './dashboard-clock-image'
 
 const clipRect = (rect: OsRect) => `inset(${rect.y / 288 * 100}% ${(576 - rect.x - rect.width) / 576 * 100}% ${(288 - rect.y - rect.height) / 288 * 100}% ${rect.x / 576 * 100}% round 8px)`
 
@@ -48,26 +47,20 @@ export function mountOsMirror(preview: HTMLElement): (frame: GlassesFrame) => vo
     if (!surface) return
     canvas.setAttribute('aria-label', [surface.title, surface.text, surface.footer].filter(Boolean).join('. '))
     const draw = async () => {
-      const panel = isDashboardLayer(surface) ? await renderDashboardPanel(surface.panel) : undefined
       if (generation !== current) return
       const ctx = canvas.getContext('2d')!
       ctx.fillStyle = '#000'
       ctx.fillRect(0, 0, 576, 288)
-      if (panel) {
-        const tiles = composeDashboardTiles(panelTiles(panel), surface, frame.banner)
-        for (const [index, pixels] of tiles.entries()) {
-          const image = ctx.createImageData(288, 144)
-          for (let i = 0; i < pixels.length; i++) {
-            const brightness = pixels[i]! / 255
-            image.data[i * 4] = 184 * brightness
-            image.data[i * 4 + 1] = 255 * brightness
-            image.data[i * 4 + 2] = 138 * brightness
-            image.data[i * 4 + 3] = 255
-          }
-          ctx.putImageData(image, index < 2 ? 0 : 288, index % 2 * 144)
-        }
-      }
       const page = buildGlassesPage(frame)
+      if (page.imageObject?.some(item => item.containerName === CLOCK_IMAGE.containerName)) {
+        const clock = clockImageState(surface, frame.banner)
+        const pixels = renderClockPixels(clock.hour, clock.minute, clock.hiddenRows)
+        ctx.fillStyle = '#b8ff8a'
+        pixels.forEach((pixel, index) => {
+          if (pixel) ctx.fillRect(CLOCK_IMAGE.xPosition + index % CLOCK_IMAGE.width,
+            CLOCK_IMAGE.yPosition + Math.floor(index / CLOCK_IMAGE.width), 1, 1)
+        })
+      }
       for (const item of page.textObject ?? []) {
         const x = item.xPosition ?? 0, y = item.yPosition ?? 0
         const width = item.width ?? 0, height = item.height ?? 0
@@ -81,17 +74,18 @@ export function mountOsMirror(preview: HTMLElement): (frame: GlassesFrame) => vo
         ctx.fillStyle = item.textColor === 1 ? '#304c28' : item.textColor === 2 ? '#6eaa58' : '#b8ff8a'
         ctx.font = '20px Arial, sans-serif'
         ctx.textBaseline = 'top'
+        const padding = item.paddingLength ?? 0
         let row = 0
         for (const line of (item.content ?? '').split('\n')) {
-          for (const part of fitLines(line, width, 20).split('\n')) {
-            ctx.fillText(part, x, y + row++ * 27 + 3)
+          for (const part of fitLines(line, width - 2 * padding, 20).split('\n')) {
+            ctx.fillText(part, x + padding, y + padding + row++ * 27 + 3)
           }
         }
         ctx.restore()
       }
       if (frame.motion) {
-        // Phone preview interpolates the same native geometry; native timing is
-        // determined by serialized SDK acknowledgements, not this duration.
+        // The phone interpolates continuously. Native samples use the same
+        // duration, with text/borders only and skips for slow acknowledgements.
         if (frame.motion.direction === 'drop' && underlay) {
           const background = underlay
           const overlay = canvas.cloneNode() as HTMLCanvasElement

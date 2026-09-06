@@ -2,7 +2,7 @@
 
 **T3 Code Assistant** connects your existing T3 Code installation, Even Realities G2 glasses, and an optional Android notification companion. Read conversations, dictate and review replies, answer plan questions, and see local weather from your glasses.
 
-**Public beta:** Even Hub app 0.5.2. The computer bridge and glasses frontend are in this repository. The [Android companion](https://github.com/DeeJanuz/even-t3-android) has its own source and signed APK releases. This is an independent community project, not an official T3 Code or Even Realities product.
+**Public beta:** Even Hub app 0.5.7. The computer bridge and glasses frontend are in this repository. The [Android companion](https://github.com/DeeJanuz/even-t3-android) has its own source and signed APK releases. This is an independent community project, not an official T3 Code or Even Realities product.
 
 ## Install with your T3 Code agent
 
@@ -23,7 +23,7 @@ Use Android 9 or newer and an Even Realities app compatible with Even Hub SDK 0.
 1. **Private network:** Install Tailscale on the phone and sign in to the same tailnet as your computer. Complete VPN approval if Android requests it.
 2. **Even Hub app:** Use the personalized `.ehpk` supplied by the installer. Upload it through your [Even Hub developer portal](https://hub.evenrealities.com/login), assign the build to a beta group containing your Even account, and install it from the Even Realities phone app. Your agent can prepare the package; account sign-in and beta access belong to you.
 3. **Bridge connection:** In T3 Code Assistant’s phone settings, enter the installer’s **WebSocket URL** and your **pairing passphrase**, then save. The passphrase is exchanged for a scoped token and cleared from the form. Do not paste credentials into a T3 conversation, GitHub issue, or screenshot.
-4. **Assistant and weather:** Choose an existing T3 project and model under Dashboard settings. Allow location for the Even Realities Android app, or choose a fallback city. New Ask assistant conversations use full access; ordinary T3 conversations keep their configured mode.
+4. **Assistant and weather:** Choose an existing T3 project and model under Dashboard settings. Allow location for the Even Realities Android app, or choose a fallback city. Every new conversation created through this app uses full access, including its first turn, without supervised approval prompts. Existing conversations keep their current access mode. Update the computer bridge to apply this behavior.
 5. **Optional phone messages:** Download the signed beta APK from [Android releases](https://github.com/DeeJanuz/even-t3-android/releases). Open it on the phone and allow that installer to install unknown apps. Enable notification access for Even Phone Companion. If Android blocks a sideloaded app’s notification access, enable **Allow restricted settings** in that app’s Android settings first.
 6. In Even Hub’s **Android notifications** section, select **Pair Android companion**. In the Android companion, enter the installer’s **HTTPS bridge origin** and the short-lived pairing code. Enable only the messaging apps you want to forward in Even Hub’s app list. No messaging-account password is needed.
 
@@ -47,12 +47,14 @@ The default private HTTPS port is 8443. If the installer chooses another port, u
 ## What runs where?
 
 - **Computer:** Authenticated bridge, connection to your existing T3 Code server, and local Whisper transcription. Notification forwarding works independently of T3 availability; T3 actions require T3 Code to be available.
-- **Glasses / Even Hub:** Dashboard, top notification bell, conversations, full-screen dictation and review, and phone settings. Standard single tap, double tap, swipe, and contextual-menu behavior applies without gesture hints on each screen.
+- **Glasses / Even Hub:** Dashboard, top Notifications N control, conversations, full-screen dictation and review, and phone settings. Standard single tap, double tap, swipe, and contextual-menu behavior applies without gesture hints on each screen.
 - **Optional Android companion:** Opt-in notification access and local reply handoff. Notification/reply contents are not stored by the companion. Android handoff confirms acceptance by the messaging app, not delivery to the recipient.
 
 The transport stays private through Tailscale Serve and normal HTTPS certificate validation. T3 credentials remain on the computer; the phone uses separately scoped credentials. Weather queries use approximate coordinates and the Open-Meteo noncommercial service. Source-code licensing does not change third-party service terms.
 
 The app keeps its existing package identity and pairing storage for compatible upgrades. Installed service names and data directories retain their original identifiers.
+
+Returning from a notification goes directly to the dashboard when no notifications remain. Otherwise, it returns to the notification list. Empty recordings and blank transcripts cannot be sent to T3 Code; the bridge also rejects digital silence before transcription. Update the computer bridge along with the glasses app to receive the recording checks.
 
 ## Develop and verify
 
@@ -64,7 +66,7 @@ npm run check:all
 
 Run `npm run dev` for local frontend development. Debug input panels, display probes, and synthetic-notification buttons are omitted from beta builds; local developers can opt in with `?debug=1`. `tests/manual/dashboard.html?notifications=phone` provides synthetic native-simulator scenarios without sending real messages.
 
-See [computer bridge internals](bridge/README.md), [dashboard extensions](docs/dashboard-extensions.md), [plan questions](docs/plan-questions.md), and the [installer skill](skills/t3-bridge-deploy/SKILL.md). T3’s orchestration API is not a stable third-party SDK; rerun compatibility checks after upgrading T3 Code. Real glasses and a physical Android phone remain necessary to assess Bluetooth latency, microphone delivery, and background restrictions.
+See [session behavior](docs/session-behavior.md), [computer bridge internals](bridge/README.md), [dashboard extensions](docs/dashboard-extensions.md), [plan questions](docs/plan-questions.md), and the [installer skill](skills/t3-bridge-deploy/SKILL.md). T3’s orchestration API is not a stable third-party SDK; rerun compatibility checks after upgrading T3 Code. Real glasses and a physical Android phone remain necessary to assess Bluetooth latency, microphone delivery, and background restrictions.
 
 ## License
 

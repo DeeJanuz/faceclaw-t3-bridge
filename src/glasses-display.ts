@@ -1,4 +1,6 @@
-import { composeDashboardTiles, dashboardLayerImageBounds, dashboardLayerImageTiles, dashboardLayerText, isDashboardLayer } from './dashboard-overlay'
+import { isDashboardLayer } from './dashboard-overlay'
+import { nativeDashboard } from './native-dashboard'
+import { CLOCK_IMAGE, clockImageState, renderClockPixels } from './dashboard-clock-image'
 import {
   CreateStartUpPageContainer,
   ImageContainerProperty,
@@ -13,9 +15,9 @@ import {
   type EvenAppBridge,
 } from '@evenrealities/even_hub_sdk'
 import { getTextWidth } from '@evenrealities/pretext'
-import { OS_FULL, type OsMotion } from './os-layout'
+import { OS_FULL, OS_MOTION_DURATION_MS, interpolateRect, type OsMotion, type OsRect } from './os-layout'
 import { ASK_ASSISTANT_MENU_ID } from './dashboard'
-import { dashboardSurfaceShape, dashboardSurfaceText, type DashboardSurface } from './dashboard-surface'
+import { dashboardSurfaceText, type DashboardSurface } from './dashboard-surface'
 export { DASHBOARD_READER_BOX } from './dashboard-surface'
 import { panelTiles, renderDashboardPanel, type DashboardPanel } from './dashboard-panel'
 
@@ -70,7 +72,7 @@ export interface GlassesFrame {
   askAssistant?: boolean
   menuItems?: Array<{ itemID: number; itemName: string }>
   motion?: OsMotion
-  // Home retains its clock images. Expanded OS surfaces use native text and borders.
+  // OS surfaces use native text and borders, plus one home clock image.
   dashboardSurface?: DashboardSurface
 }
 
@@ -78,6 +80,26 @@ const SURFACE_FOOTER_ID = 7
 
 function surfaceText(frame: GlassesFrame) {
   return dashboardSurfaceText(frame.dashboardSurface!, frame.banner)
+}
+
+function transitionPage(next: GlassesFrame, previous: GlassesFrame, motion: OsMotion, rect: OsRect): RebuildPageContainer {
+  const closing = ['collapse', 'retract', 'lower'].includes(motion.direction)
+  const source = closing ? previous : next
+  if (['drop', 'retract'].includes(motion.direction) && isDashboardLayer(source.dashboardSurface)) {
+    // While the dropdown is short, both home actions remain visible. Omit the
+    // clock's period along with its image so the sample stays within 8 texts.
+    const textObject = nativeDashboard(source.dashboardSurface!, source.banner, rect, { showPeriod: false })
+    return new RebuildPageContainer({ containerTotalNum: textObject.length, textObject, imageObject: [] })
+  }
+  const outline = textContainer(5, 'os-transition', rect.x, rect.y, rect.width, rect.height, '', 0, 1)
+  outline.borderWidth = 1; outline.borderColor = 4; outline.borderRadius = 8
+  const textObject = [textContainer(8, 'surface-input', 0, 0, 576, 288, ' ', 1, 0), outline]
+  const content = source.dashboardSurface ? surfaceText(source) : { title: source.header, text: source.body }
+  if (rect.height >= 48) textObject.push(textContainer(HEADER_ID, 'header', rect.x + 16, rect.y + 10,
+    rect.width - 32, 27, content.title, 0, 2))
+  if (rect.height >= 80) textObject.push(textContainer(BODY_ID, 'body', rect.x + 16, rect.y + 42,
+    rect.width - 32, Math.floor((rect.height - 50) / 27) * 27, content.text, 0, 3))
+  return new RebuildPageContainer({ containerTotalNum: textObject.length, textObject, imageObject: [], menuObject: contextualMenu(next) })
 }
 
 function dashboardSurfacePage(frame: GlassesFrame): PageContainers {
@@ -112,29 +134,8 @@ function dashboardSurfacePage(frame: GlassesFrame): PageContainers {
     textObject.forEach((item, index) => { item.zOrderIndex = index })
     return { textObject, imageObject: [] }
   }
-  const layer = dashboardLayerText(frame.dashboardSurface!, frame.banner)
-  const imageBounds = dashboardLayerImageBounds(frame.dashboardSurface!)
-  return {
-    textObject: [
-      textContainer(HEADER_ID, 'header', 497, 22, 44, 28, layer.header, 0, 5),
-      // Eight lines fit the separate home cards. Readers use seven lines to
-      // leave the footer free. No hidden home labels live under the active card.
-      textContainer(BODY_ID, 'body', 269, 49, 268, 216, layer.body || ' ', 0, 6),
-      textContainer(SURFACE_FOOTER_ID, 'surface-footer', 269, 243, 268, 27, layer.footer || ' ', 0, 7),
-      textContainer(3, 'overlay-title', 32, 22, 280, 28, layer.overlayTitle || ' ', 0, 8),
-      textContainer(4, 'overlay-body', 32, 54, 512, 54, layer.overlayBody || ' ', 0, 9),
-      textContainer(6, 'overlay-meta', 324, 22, 220, 28, layer.overlayMeta || ' ', 0, 10),
-      // A full-size blank capture container emits repeated swipes without
-      // scrolling the visible text or competing with application pagination.
-      textContainer(8, 'surface-input', 0, 0, 576, 288, ' ', 1, 0),
-    ],
-    imageObject: DISPLAY_IMAGE_SLOTS.map((slot, index) => new ImageContainerProperty({
-      ...slot, xPosition: imageBounds[index]!.x,
-      yPosition: imageBounds[index]!.y,
-      width: imageBounds[index]!.width,
-      height: imageBounds[index]!.height, zOrderIndex: 1 + index,
-    })),
-  }
+  return { textObject: nativeDashboard(frame.dashboardSurface!, frame.banner),
+    imageObject: [new ImageContainerProperty(CLOCK_IMAGE)] }
 }
 
 export interface DashboardActionRow { key: string; label: string; selected: boolean; previews?: string[] }
@@ -488,7 +489,7 @@ export function buildGlassesPage(frame: GlassesFrame): RebuildPageContainer {
 
 function contextualMenu(frame: GlassesFrame): MenuContainerProperty | undefined {
   // Home and the overlay keep the standard OS menu. Context actions belong
-  // to expanded pages; changing this menu would discard the resident background.
+  // to expanded pages.
   if (frame.dashboardSurface?.view === 'home' || frame.dashboardSurface?.view === 'notifications') return undefined
   const items = frame.menuItems ?? (frame.askAssistant ? [{ itemID: ASK_ASSISTANT_MENU_ID, itemName: 'Ask assistant' }] : [])
   return items.length ? new MenuContainerProperty({ menuItems: items.map(item => new MenuItemProperty(item)) }) : undefined
@@ -530,9 +531,9 @@ export class GlassesDisplay {
   } | null = null
   private diagnosticActive = false
   private needsRebuild = false
-  private imageInterrupted = false
+  private motionInterrupted = false
   private dashboardTiles: number[][] = []
-  private surfaceTiles: number[][] = []
+  private renderedClockKey = ''
   private diagnosticStep: ((line: string) => void) | undefined
 
   constructor(private readonly bridge: EvenAppBridge) {}
@@ -583,14 +584,9 @@ export class GlassesDisplay {
     })
   }
 
-  /** Let the next input run after the current image, without draining stale tiles. */
+  /** A new gesture skips the remaining animation samples after the active call. */
   prioritizeInput(): void {
-    if (this.rendering && !this.diagnosticActive) this.imageInterrupted = true
-  }
-
-  /** Complete an interrupted dashboard if the input did not change the view. */
-  async completePendingImages(): Promise<void> {
-    if (this.imageInterrupted && isDashboardLayer(this.frame.dashboardSurface)) await this.render(this.frame)
+    if (this.rendering && !this.diagnosticActive) this.motionInterrupted = true
   }
 
   // Run diagnostics on the same native writer as production. Incoming session
@@ -644,10 +640,24 @@ export class GlassesDisplay {
   }
 
   private async renderNow(next: GlassesFrame): Promise<void> {
-    // SDK acknowledgements can precede the physical Bluetooth redraw. Queuing
-    // geometry samples therefore creates a slow animation backlog on glasses.
-    // Commit one final native layout; the phone mirror owns transform animation.
-    this.imageInterrupted = false
+    this.motionInterrupted = false
+    if (next.dashboardSurface && next.motion && next.motion.id !== this.frame.motion?.id && !this.diagnosticActive) {
+      // Restore native motion on the fast text/border path. Never create image
+      // placeholders in a sample. Slow acknowledgements or new input skip the
+      // remaining samples instead of building a stale animation queue.
+      const started = performance.now()
+      for (let index = 1; index < 12; index++) {
+        const progress = Math.max(index / 12, (performance.now() - started) / OS_MOTION_DURATION_MS)
+        if (progress >= 1 || this.motionInterrupted || this.pendingRender) break
+        const rect = interpolateRect(next.motion.from, next.motion.to, 1 - Math.pow(1 - progress, 3))
+        this.needsRebuild = true
+        if (!await this.bridge.rebuildPageContainer(transitionPage(next, this.frame, next.motion, rect))) {
+          throw new Error('OS transition update failed')
+        }
+        const remaining = started + OS_MOTION_DURATION_MS * index / 11 - performance.now()
+        if (remaining > 0 && !this.motionInterrupted && !this.pendingRender) await new Promise(resolve => setTimeout(resolve, remaining))
+      }
+    }
     if (!next.dashboardSurface && next.card?.presentation === 'plan' && next.card.entrance
       && next.card.transition !== this.frame.card?.transition) {
       // The SDK has no transform animation. Use one clipped native entrance
@@ -752,75 +762,43 @@ export class GlassesDisplay {
   }
 
   private async renderDashboardSurface(next: GlassesFrame): Promise<void> {
-    if (isDashboardLayer(next.dashboardSurface)) { await this.renderDashboardLayer(next); return }
-    const rebuild = this.needsRebuild || !this.frame.dashboardSurface
-      || JSON.stringify(contextualMenu(next)) !== JSON.stringify(contextualMenu(this.frame))
-      || dashboardSurfaceShape(next.dashboardSurface!, next.banner) !== dashboardSurfaceShape(this.frame.dashboardSurface!, this.frame.banner)
     const page = buildGlassesPage(next)
-    const previous = rebuild ? undefined : buildGlassesPage(this.frame)
+    const previous = this.frame.dashboardSurface ? buildGlassesPage(this.frame) : undefined
+    // Compare native structure, separately from text/brightness. Selection and
+    // count/weather updates keep their containers and leave the clock resident.
+    const shape = (value: RebuildPageContainer) => JSON.stringify({ ...value,
+      textObject: value.textObject?.map(({ content: _content, textColor: _color, ...layout }) => layout),
+    })
+    const rebuild = this.needsRebuild || !previous || shape(page) !== shape(previous)
     try {
       if (rebuild) {
         this.needsRebuild = true
         this.dashboardTiles = []
-        this.surfaceTiles = []
+        this.renderedClockKey = ''
         if (!await this.bridge.rebuildPageContainer(page)) throw new Error('Dashboard layout update failed')
       } else {
         for (const item of page.textObject ?? []) {
           const old = previous?.textObject?.find(candidate => candidate.containerID === item.containerID)
-          if (item.content !== old?.content && !await this.bridge.textContainerUpgrade(new TextContainerUpgrade({
+          if ((item.content !== old?.content || item.textColor !== old?.textColor) && !await this.bridge.textContainerUpgrade(new TextContainerUpgrade({
             containerID: item.containerID, containerName: item.containerName, content: item.content || ' ', textColor: item.textColor,
           }))) throw new Error('Dashboard text update failed')
+        }
+      }
+      if (page.imageObject?.length) {
+        const clock = clockImageState(next.dashboardSurface!, next.banner)
+        if (this.renderedClockKey !== clock.key) {
+          const result = await this.bridge.updateImageRawData(new ImageRawDataUpdate({
+            containerID: CLOCK_IMAGE.containerID, containerName: CLOCK_IMAGE.containerName,
+            imageData: renderClockPixels(clock.hour, clock.minute, clock.hiddenRows),
+          }))
+          if (result !== ImageRawDataUpdateResult.success) throw new Error('Clock image update failed')
+          this.renderedClockKey = clock.key
         }
       }
     } catch (error) {
       this.needsRebuild = true
       throw error
     }
-    this.frame = next
-    this.renderedActivityKey = ''
-    this.needsRebuild = false
-  }
-
-  private async renderDashboardLayer(next: GlassesFrame): Promise<void> {
-    const surface = next.dashboardSurface!
-    const rebuild = this.needsRebuild || !isDashboardLayer(this.frame.dashboardSurface)
-      || JSON.stringify(dashboardLayerImageBounds(surface)) !== JSON.stringify(dashboardLayerImageBounds(this.frame.dashboardSurface!))
-    const values = dashboardLayerText(surface, next.banner)
-    const previous = !rebuild ? dashboardLayerText(this.frame.dashboardSurface!, this.frame.banner) : undefined
-    const fields = [
-      [1, 'header', 'header'], [2, 'body', 'body'], [7, 'surface-footer', 'footer'],
-      [3, 'overlay-title', 'overlayTitle'], [4, 'overlay-body', 'overlayBody'], [6, 'overlay-meta', 'overlayMeta'],
-    ] as const
-    const visible = (value: string | undefined) => value?.trim() ? value : ' '
-    const written = new Set<string>()
-    const update = async (id: number, name: string, key: typeof fields[number][2]) => {
-      if (!await this.upgrade(id, name, visible(values[key]))) throw new Error('Dashboard text update failed')
-      written.add(key)
-    }
-    try {
-      if (rebuild) {
-        this.needsRebuild = true
-        this.surfaceTiles = []
-        this.dashboardTiles = []
-        // Native labels arrive with the page, above the image layers. Never
-        // withhold the usable dashboard while its clock tiles cross Bluetooth.
-        if (!await this.bridge.rebuildPageContainer(buildGlassesPage(next))) throw new Error('Dashboard layout update failed')
-      } else {
-        const enteringOverlay = surface.view === 'notifications' || Boolean(next.banner)
-        for (const [id, name, key] of fields) {
-          if (visible(values[key]) === visible(previous?.[key])) continue
-          // Clear disappearing foreground text, or covered home text, once
-          // before the changed image regions. Do not resend unchanged blanks.
-          if (key.startsWith('overlay') ? visible(values[key]) === ' ' : enteringOverlay) await update(id, name, key)
-        }
-      }
-      const panel = panelTiles(await renderDashboardPanel(surface.panel))
-      await this.writeChangedTiles(dashboardLayerImageTiles(composeDashboardTiles(panel, surface, next.banner), surface), this.surfaceTiles,
-        DISPLAY_IMAGE_SLOTS, 'Dashboard card image update failed', true)
-      if (!rebuild) for (const [id, name, key] of fields) {
-        if (!written.has(key) && visible(values[key]) !== visible(previous?.[key])) await update(id, name, key)
-      }
-    } catch (error) { this.needsRebuild = true; throw error }
     this.frame = next
     this.renderedActivityKey = ''
     this.needsRebuild = false
@@ -851,13 +829,12 @@ export class GlassesDisplay {
   }
 
   private async writeChangedTiles(tiles: number[][], cache: number[][],
-    slots: ReadonlyArray<{ containerID: number; containerName: string }>, errorMessage: string, interruptible = false): Promise<void> {
+    slots: ReadonlyArray<{ containerID: number; containerName: string }>, errorMessage: string): Promise<void> {
     const changed = tiles.map((imageData, index) => ({ imageData, index })).filter(({ imageData, index }) => {
       const previous = cache[index]
       return !previous || previous.length !== imageData.length || imageData.some((pixel, offset) => pixel !== previous[offset])
     })
     for (const { imageData, index } of changed) {
-      if (interruptible && !this.diagnosticActive && (this.imageInterrupted || this.pendingRender)) break
       const result = await this.bridge.updateImageRawData(new ImageRawDataUpdate({ ...slots[index]!, imageData }))
         .catch(() => { throw new Error(errorMessage) })
       if (result !== ImageRawDataUpdateResult.success) throw new Error(errorMessage)

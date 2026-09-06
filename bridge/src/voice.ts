@@ -6,6 +6,18 @@ const SAMPLE_RATE = 16_000;
 const CHANNELS = 1;
 const BITS_PER_SAMPLE = 16;
 
+function hasAudioSignal(pcm: readonly Buffer[]): boolean {
+  let firstSample: number | undefined;
+  for (const chunk of pcm) {
+    for (let offset = 0; offset + 1 < chunk.byteLength; offset += 2) {
+      const sample = chunk.readInt16LE(offset);
+      firstSample ??= sample;
+      if (sample !== firstSample) return true;
+    }
+  }
+  return false;
+}
+
 export function pcmToWav(pcmChunks: readonly Buffer[]): Buffer {
   const dataBytes = pcmChunks.reduce((sum, chunk) => sum + chunk.byteLength, 0);
   const output = Buffer.allocUnsafe(44 + dataBytes);
@@ -62,6 +74,10 @@ export class WhisperCppTranscriber implements Transcriber {
   constructor(private readonly config: BridgeConfig) {}
 
   async transcribe(pcm: readonly Buffer[], signal: AbortSignal): Promise<string> {
+    if (signal.aborted) throw new ApiError(409, "voice_cancelled", "Dictation was cancelled");
+    // Whisper can invent text for digital silence or a stuck microphone. Reject
+    // flat PCM without an amplitude threshold that could discard quiet speech.
+    if (!hasAudioSignal(pcm)) throw new ApiError(422, "no_speech", "No speech was detected");
     const wav = pcmToWav(pcm);
     const multipart = multipartBody(wav, this.config.whisperLanguage);
     const requestBody = new ArrayBuffer(multipart.body.byteLength);

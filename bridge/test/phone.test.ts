@@ -152,3 +152,49 @@ test('native command lease matches immutable ID timestamp and allows small clock
   phone.sync(sync({ results: [{ id: params.commandId, status: 'handed_off' }] }));
   await pending;
 });
+
+test('wake relay is opt-in, validates atomically, excludes disabled apps and rebaselines settings/reconnect', (context) => {
+  let now = Date.now();
+  context.mock.method(Date, 'now', () => now);
+  const phone = service(25);
+  const fresh = (text: string) => ({ ...notification, text, arrivedAt: Date.now() });
+  assert.equal(phone.sync(sync()).wakeEvents, undefined);
+  assert.throws(() => phone.sync(sync({ wakeRelayEnabled: 'yes' })));
+  const opted = (text: string, extras = {}) => sync({ wakeRelayEnabled: true, notifications: [fresh(text)], ...extras });
+  assert.deepEqual(phone.sync(opted('existing')).wakeEvents, []);
+  assert.equal(phone.sync(opted('new')).wakeEvents?.length, 1);
+  assert.deepEqual(phone.sync(opted('new')).wakeEvents, []);
+  phone.setEnabled({ packageName: app.packageName, enabled: false });
+  assert.deepEqual(phone.sync(opted('disabled')).wakeEvents, []);
+  phone.setEnabled({ packageName: app.packageName, enabled: true });
+  assert.deepEqual(phone.sync(opted('on enable')).wakeEvents, []);
+  assert.equal(phone.sync(opted('fresh again')).wakeEvents?.length, 1);
+  assert.deepEqual(phone.sync(opted('permission gone', { permissionGranted: false })).wakeEvents, []);
+  assert.deepEqual(phone.sync(opted('permission back')).wakeEvents, []);
+  now += 40;
+  assert.deepEqual(phone.sync(opted('reconnect')).wakeEvents, []);
+  assert.deepEqual(phone.sync(opted('off', { wakeRelayEnabled: false })).wakeEvents, []);
+  assert.deepEqual(phone.sync(opted('on')).wakeEvents, []);
+});
+
+test('T3 wake reads run independently of sync; opt-out invalidates in-flight results', async () => {
+  let resolveRead!: (sessions: []) => void;
+  let reads = 0;
+  const phone = new PhoneService('bridge-secret', () => {}, 6000, 10_000, () => {
+    reads++;
+    return new Promise<[]>(resolve => { resolveRead = resolve; });
+  });
+  services.push(phone);
+  phone.sync(sync());
+  await wait(1050);
+  assert.equal(reads, 0);
+  phone.sync(sync({ wakeRelayEnabled: true }));
+  await wait(1050);
+  assert.equal(reads, 1);
+  // A hung provider never delays phone inboxes or native command results.
+  assert.equal(phone.sync(sync({ wakeRelayEnabled: true })).v, 1);
+  phone.sync(sync({ wakeRelayEnabled: false }));
+  resolveRead([]);
+  await wait(0);
+  assert.deepEqual(phone.sync(sync({ wakeRelayEnabled: false })).wakeEvents, []);
+});

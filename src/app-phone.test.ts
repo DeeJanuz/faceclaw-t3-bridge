@@ -46,7 +46,7 @@ describe('phone notification flow', () => {
     expect(request).toHaveBeenCalledWith('phone.notifications.reply', expect.objectContaining({ text }))
     expect(show).toHaveBeenCalledWith(expect.objectContaining({ card: expect.objectContaining({ title: 'SENDING REPLY', body: expect.stringContaining(displayed) }) }))
   })
-  it('updates a dictating conversation without changing focus or stopping audio; popup expires at three seconds', async () => {
+  it('updates a dictating conversation without covering it or stopping audio', async () => {
     const { state, audioControl } = setup()
     const recording = { target: { kind: 'phone', key: 'chat' }, startedAt: Date.now(), sentBytes: 0, maxBytes: 999, partialText: 'My reply' }
     state.screen = 'dictating'; state.dictation = recording
@@ -54,11 +54,8 @@ describe('phone notification flow', () => {
     expect(state.dictation).toBe(recording)
     expect(state.screen).toBe('dictating')
     expect(audioControl).not.toHaveBeenCalled()
-    expect(state.arrivalBanner.split('\n')).toHaveLength(2)
-    await vi.advanceTimersByTimeAsync(2999)
-    expect(state.arrivalBanner).toContain('Friends: Message 2')
-    await vi.advanceTimersByTimeAsync(1)
     expect(state.arrivalBanner).toBeUndefined()
+    expect(state.phone.notifications[0].revision).toBe('2')
   })
   it('cancels removal immediately, discards draft and returns after one second', async () => {
     const { state, inbox, audioControl, show } = setup()
@@ -134,13 +131,13 @@ describe('phone notification flow', () => {
     state.onEvenEvent({ menuItemClickEvent: { itemID: 7 } }); await state.eventQueue
     expect(request).not.toHaveBeenCalled()
   })
-  it('gives the latest arrival a full three seconds and replaces the previous popup', async () => {
+  it('gives the latest arrival a full ten seconds and replaces the previous popup', async () => {
     const { state } = setup()
     await state.acceptPhone(snapshot([notification('2')]))
     await vi.advanceTimersByTimeAsync(2000)
     await state.acceptPhone(snapshot([notification('3')]))
     expect(state.arrivalBanner).toContain('Message 3')
-    await vi.advanceTimersByTimeAsync(2999)
+    await vi.advanceTimersByTimeAsync(9999)
     expect(state.arrivalBanner).toContain('Message 3')
     await vi.advanceTimersByTimeAsync(1)
     expect(state.arrivalBanner).toBeUndefined()

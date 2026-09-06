@@ -5,7 +5,7 @@ import { OS_NOTIFICATION } from './os-layout'
 
 const home: DashboardSurface = { view: 'home', title: 'HOME', text: '', footer: '',
   panel: { hour: '12', minute: '30', period: 'PM', hour24: 12, date: 'Sat 09/05', batteryPercent: 50, connection: 'Connected', weather: [], unread: 2 },
-  actions: [{ key: 'notifications', label: 'Notifications (2)', selected: true, previews: ['Signal\nLunch?', 'Mail\nProject notes'] },
+  actions: [{ key: 'notifications', label: 'Notifications 2', selected: true, previews: ['Signal\nLunch?', 'Mail\nProject notes'] },
     { key: 'assistant', label: 'Ask assistant', selected: false }, { key: 'sessions', label: 'Sessions', selected: false }] }
 
 describe('stationary notification overlay', () => {

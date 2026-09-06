@@ -87,3 +87,63 @@ describe('dictation startup', () => {
     expect(request).toHaveBeenLastCalledWith('voice.cancel')
   })
 })
+
+describe('empty dictation', () => {
+  function setupDraft() {
+    const { bridge, request, internals } = setup()
+    const flow = internals as unknown as {
+      screen: string
+      dictation: unknown
+      voiceDraft: { target: VoiceTarget | { kind: 'phone'; key: string }; returnScreen: string; text: string; pages: string[]; page: number } | null
+      finishDictation(): Promise<void>
+      sendVoiceDraft(): Promise<void>
+      showVoiceState(): Promise<void>
+      showError(message: string, returnScreen: string): Promise<void>
+      renderVoiceDraft(): Promise<void>
+    }
+    vi.spyOn(flow, 'showVoiceState').mockResolvedValue()
+    vi.spyOn(flow, 'showError').mockResolvedValue()
+    vi.spyOn(flow, 'renderVoiceDraft').mockResolvedValue()
+    return { bridge, request, flow }
+  }
+
+  it.each(['', ' \n\t '])('rejects a blank final transcript without presenting a sendable draft: %j', async (text) => {
+    const { bridge, request, flow } = setupDraft()
+    flow.screen = 'dictating'
+    flow.dictation = { target: { kind: 'thread', threadId: 'test' }, returnScreen: 'transcript' }
+    request.mockResolvedValue({ text })
+    await flow.finishDictation()
+    expect(bridge.audioControl).toHaveBeenCalledWith(false)
+    expect(request.mock.calls).toEqual([['voice.finish']])
+    expect(flow.dictation).toBeNull()
+    expect(flow.voiceDraft).toBeNull()
+    expect(flow.renderVoiceDraft).not.toHaveBeenCalled()
+    expect(flow.showError).toHaveBeenCalledWith(expect.stringContaining('No speech was detected'), 'transcript')
+  })
+
+  it.each([
+    [{ kind: 'thread', threadId: 'test' }, 'transcript'],
+    [{ kind: 'thread', threadId: 'test' }, 'plan'],
+    [{ kind: 'project', projectId: 'test', modelSelection: { instanceId: 'codex', model: 'test' } }, 'new-session'],
+    [{ kind: 'assistant', projectId: 'test', modelSelection: { instanceId: 'codex', model: 'test' } }, 'assistant'],
+    [{ kind: 'phone', key: 'test' }, 'notifications'],
+  ] as const)('rejects a blank draft before dispatching to %j', async (target, returnScreen) => {
+    const { request, flow } = setupDraft()
+    flow.voiceDraft = { target, returnScreen, text: ' \n\t ', pages: [''], page: 0 }
+    await flow.sendVoiceDraft()
+    expect(request).not.toHaveBeenCalled()
+    expect(flow.voiceDraft).toBeNull()
+    expect(flow.showError).toHaveBeenCalledWith('No speech was detected. Nothing was sent.', returnScreen)
+  })
+
+  it('keeps nonempty speech available for review without sending it', async () => {
+    const { request, flow } = setupDraft()
+    flow.dictation = { target: { kind: 'thread', threadId: 'test' }, returnScreen: 'transcript' }
+    request.mockResolvedValue({ text: '  A quiet reply.  ' })
+    await flow.finishDictation()
+    expect(flow.voiceDraft?.text).toBe('A quiet reply.')
+    expect(flow.renderVoiceDraft).toHaveBeenCalledOnce()
+    expect(request.mock.calls).toEqual([['voice.finish']])
+    expect(flow.showError).not.toHaveBeenCalled()
+  })
+})

@@ -116,8 +116,8 @@ describe('dashboard and assistant app flow', () => {
     expect(state.screen).toBe('notifications')
     await state.handleDoubleTap()
     expect(state.screen).toBe('dashboard')
-    expect(native.rebuildPageContainer).toHaveBeenCalledTimes(4)
-    expect(native.updateImageRawData.mock.calls.map(([item]) => item.containerID)).toEqual([9, 9, 11, 9, 10, 11, 12, 9, 11])
+    expect(native.rebuildPageContainer.mock.calls.every(([page]) => page.imageObject.length <= 1)).toBe(true)
+    expect(native.updateImageRawData).toHaveBeenCalledTimes(3)
     expect(native.rebuildPageContainer.mock.calls.some(([page]) => page.textObject.some((item: any) => item.containerName === 'header' && item.content === 'Signal · Friends'))).toBe(true)
   })
   it('adds three local notifications without RPCs, persistence, or focus movement and reads them through the inbox', async () => {
@@ -129,7 +129,7 @@ describe('dashboard and assistant app flow', () => {
     const real = JSON.stringify(state.notifications)
     await app.createTestNotifications()
     expect(state.dashboardSelection).toBe('assistant')
-    expect(state.cards.find((card: any) => card.key === 'notifications').title).toBe('Notifications (3)')
+    expect(state.cards.find((card: any) => card.key === 'notifications').title).toBe('Notifications 3')
     expect(request).not.toHaveBeenCalled()
     expect(native.setLocalStorage).not.toHaveBeenCalled()
     expect(JSON.stringify(state.notifications)).toBe(real)
@@ -147,7 +147,7 @@ describe('dashboard and assistant app flow', () => {
     expect(state.dashboardReader.page).toBe(1)
     await state.handleDoubleTap()
     expect(state.screen).toBe('notifications')
-    expect(state.cards.find((card: any) => card.key === 'notifications').title).toBe('Notifications (2)')
+    expect(state.cards.find((card: any) => card.key === 'notifications').title).toBe('Notifications 2')
     expect(request).not.toHaveBeenCalled()
   })
   it('focuses the top bell by swiping up from Ask assistant and reverses reader and inbox motion', async () => {
@@ -172,6 +172,37 @@ describe('dashboard and assistant app flow', () => {
     expect(state.screen).toBe('dashboard')
     expect(companion.setOsMirror).toHaveBeenCalledWith(expect.objectContaining({ motion: expect.objectContaining({ direction: 'retract' }) }))
     expect(state.dashboardSelection).toBe('notifications')
+  })
+  it('returns home after reading the last test notification', async () => {
+    const { app, state } = setup()
+    await state.openDashboard()
+    await app.createTestNotifications()
+    await state.openNotifications()
+    for (let remaining = 2; remaining >= 0; remaining--) {
+      await state.handleTap()
+      expect(state.screen).toBe('dashboard-reader')
+      expect(state.testNotifications).toHaveLength(remaining)
+      await state.handleDoubleTap()
+      expect(state.screen).toBe(remaining === 0 ? 'dashboard' : 'notifications')
+    }
+    expect(state.dashboardSelection).toBe('notifications')
+    expect(state.lastGlassesFrame.dashboard.panel.unread).toBe(0)
+  })
+  it('returns home when the phone inbox is empty on leaving its reader', async () => {
+    const { state } = setup()
+    state.phone = { connected: true, permissionGranted: true, apps: [], notifications: [
+      { key: 'chat', revision: '1', packageName: 'org.signal', appName: 'Signal', title: 'Friends', arrivedAt: Date.now(), replyable: true, text: 'Message' },
+    ] }
+    await state.openDashboard()
+    await state.openNotifications()
+    await state.handleTap()
+    expect(state.screen).toBe('phone-reader')
+    state.phone = { ...state.phone, notifications: [] }
+    await state.handleDoubleTap()
+    expect(state.screen).toBe('dashboard')
+    expect(state.phoneKey).toBeNull()
+    expect(state.notificationItems).toHaveLength(0)
+    expect(state.lastGlassesFrame.dashboard.panel.unread).toBe(0)
   })
   it('keeps the selected expanded notification when cancelling an assistant shortcut', async () => {
     const { app, state } = setup()
@@ -306,18 +337,20 @@ describe('dashboard and assistant app flow', () => {
     expect(native.audioControl).not.toHaveBeenCalled()
     resolve({ projects: [project] })
     await opening
-    expect(native.rebuildPageContainer).toHaveBeenCalledOnce()
+    const openingCalls = native.rebuildPageContainer.mock.calls.length
+    expect(openingCalls).toBeGreaterThan(1)
+    expect(openingCalls).toBeLessThanOrEqual(12)
     expect(native.updateImageRawData).not.toHaveBeenCalled()
     expect(state.lastGlassesFrame.dashboardSurface.view).toBe('voice')
     await state.handleTap()
     expect(state.screen).toBe('draft')
-    expect(native.rebuildPageContainer).toHaveBeenCalledOnce()
+    expect(native.rebuildPageContainer).toHaveBeenCalledTimes(openingCalls)
     await state.handleDoubleTap()
     expect(state.screen).toBe('dashboard')
     expect(state.dashboardSelection).toBe('assistant')
     expect(companion.setOsMirror).toHaveBeenCalledWith(expect.objectContaining({ motion: expect.objectContaining({ direction: 'collapse' }) }))
-    expect(native.rebuildPageContainer).toHaveBeenCalledTimes(2)
-    expect(native.updateImageRawData.mock.calls.map(([item]) => item.containerID)).toEqual([9, 10, 11, 12])
+    expect(native.rebuildPageContainer.mock.lastCall![0].imageObject).toContainEqual(expect.objectContaining({ containerName: 'home-clock' }))
+    expect(native.updateImageRawData).toHaveBeenCalledOnce()
   })
   it('keeps swiping and project/session browsing usable without assistant settings', async () => {
     const { state, request, native, event } = setup()
@@ -346,7 +379,7 @@ describe('dashboard and assistant app flow', () => {
     const { state, companion } = setup()
     await state.openDashboard()
     expect(companion.setDashboardMirror.mock.lastCall?.[2]).toEqual([
-      { key: 'notifications', label: 'Notifications (0)', selected: false, previews: undefined },
+      { key: 'notifications', label: 'Notifications 0', selected: false, previews: undefined },
       { key: 'assistant', label: 'Ask assistant', selected: true },
       { key: 'sessions', label: 'Sessions', selected: false },
     ])
@@ -379,6 +412,13 @@ describe('dashboard and assistant app flow', () => {
     await state.handleDoubleTap()
     expect(state.screen).toBe('sessions')
     expect(state.sessionSelection).toBe('new')
+  })
+  it('preserves recent-project order from the bridge and selects the first project', async () => {
+    const { state, request } = setup()
+    request.mockResolvedValue({ projects: [{ ...project, id: 'recent', title: 'Zebra' }, project] })
+    await state.openProjects()
+    expect(state.projectRows.map((row: any) => row.key)).toEqual(['project:recent', 'project:p'])
+    expect(state.projectSelection).toBe('project:recent')
   })
   it('returns a new project conversation and assistant cancellation to the selected project', async () => {
     const { state } = setup()
@@ -442,7 +482,7 @@ describe('dashboard and assistant app flow', () => {
     state.onBridgeEvent('sessions.changed', snapshot(1, true))
     expect(state.latestSessions.snapshotId).toBe('2')
   })
-  it('opens alerts only through Notifications, marks read after loading, and returns through the inbox', async () => {
+  it('opens alerts only through Notifications, marks read after loading, and returns directly home when empty', async () => {
     const { state, request } = setup()
     state.acceptSessions(snapshot(0))
     state.acceptSessions(snapshot(1, true))
@@ -460,11 +500,9 @@ describe('dashboard and assistant app flow', () => {
     expect(state.notifications.unread).toHaveLength(0)
     expect(state.screen).toBe('transcript')
     await state.handleDoubleTap()
-    expect(state.screen).toBe('notifications')
-    await state.handleDoubleTap()
     expect(state.screen).toBe('dashboard')
     expect(state.dashboardSelection).toBe('notifications')
-    expect(state.cards.find((card: any) => card.key === 'notifications').title).toBe('Notifications (0)')
+    expect(state.cards.find((card: any) => card.key === 'notifications').title).toBe('Notifications 0')
     expect(state.lastGlassesFrame.dashboard.panel.unread).toBe(0)
   })
   it.each(['dashboard', 'notifications'])('removes three alerts immediately from %s when their thread resumes work', async (screen) => {

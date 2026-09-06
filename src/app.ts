@@ -132,7 +132,16 @@ interface AssistantOrigin {
   responseBaseline: Set<string> | null
   transcriptReturn: 'sessions' | 'projects' | 'dashboard' | 'notifications'
   previous: AssistantOrigin | null
+  phoneKey: string | null
+  phonePage: number
+  dashboardSelection: string
+  notificationSelection: string
+  dashboardReader: { title: string; pages: string[]; page: number; returnTo?: 'notifications' } | null
+  planFlow: PlanFlow | null
 }
+
+type ArrivalTarget = { kind: 'phone'; key: string; revision: string }
+  | { kind: 'thread'; threadId: string; turnId: string }
 
 export class EvenT3App {
   private readonly display: GlassesDisplay
@@ -144,6 +153,7 @@ export class EvenT3App {
   private phoneKey: string | null = null
   private phonePage = 0
   private arrivalBanner: string | undefined
+  private arrivalTarget: ArrivalTarget | null = null
   private bannerTimer: number | undefined
   private phoneResetGeneration = 0
   private sessions: SessionsListResult | null = null
@@ -314,7 +324,7 @@ export class EvenT3App {
   cleanup(): void {
     this.closed = true
     this.phoneDismissal = null
-    window.clearTimeout(this.bannerTimer)
+    this.clearArrival()
     this.phoneResetGeneration += 1
     this.endpointGeneration += 1
     if (this.dashboardTimer !== null) window.clearInterval(this.dashboardTimer)
@@ -343,6 +353,7 @@ export class EvenT3App {
     if (this.closed) return
     if (this.voiceFlowBusy()) throw new Error('Finish or cancel dictation before changing bridges.')
     this.endpointGeneration += 1
+    this.clearArrival()
     this.endpoint = normalizeBridgeWebSocketUrl(profile.url)
     this.stopPlanPoll()
     this.planFlow = null
@@ -422,6 +433,10 @@ export class EvenT3App {
     if (this.closed) return
     const previous = this.phone
     this.phone = snapshot
+    const target = this.arrivalTarget
+    const bannerRemoved = target?.kind === 'phone' && (!snapshot.connected ||
+      !snapshot.notifications.some(item => item.key === target.key && item.revision === target.revision))
+    if (bannerRemoved) this.clearArrival()
     if (!snapshot.connected) this.phoneDismissal = null
     this.companion.setPhoneSettings?.(snapshot)
     const active = this.phoneKey && (this.screen === 'phone-reader' || this.dictation?.target.kind === 'phone' || this.voiceDraft?.target.kind === 'phone')
@@ -442,15 +457,14 @@ export class EvenT3App {
         await new Promise(resolve => window.setTimeout(resolve, 1000))
         if (reset !== this.phoneResetGeneration || this.closed) return
       }
-      await this.openNotifications(true)
+      await this.leavePhoneReader()
       return
     }
     const arrived = announce && previous.connected && snapshot.connected
       ? snapshot.notifications.find(item => previous.notifications.find(old => old.key === item.key)?.revision !== item.revision) : undefined
     if (arrived) {
-      this.arrivalBanner = `${fitLines(arrived.appName, 512, 1)}\n${notificationPreview(arrived.title || arrived.sender || arrived.thread || '', arrived.text)}`
-      window.clearTimeout(this.bannerTimer)
-      this.bannerTimer = window.setTimeout(() => { this.bannerTimer = undefined; this.arrivalBanner = undefined; if (!this.closed) void this.show(this.lastGlassesFrame) }, 3000)
+      this.announceArrival({ kind: 'phone', key: arrived.key, revision: arrived.revision },
+        `${fitLines(arrived.appName, 512, 1)}\n${notificationPreview(arrived.title || arrived.sender || arrived.thread || '', arrived.text)}`)
     }
     if (selected && active) {
       this.voiceBackgroundFrame = { ...this.phoneReaderFrame(selected),
@@ -459,7 +473,66 @@ export class EvenT3App {
       else if (this.screen === 'dictating') await this.renderDictation()
       else if (this.screen === 'draft') await this.renderVoiceDraft()
     } else await this.refreshDashboards()
-    if (arrived) await this.show(this.lastGlassesFrame)
+    if (arrived || bannerRemoved) await this.show(this.lastGlassesFrame)
+  }
+
+  private canOpenArrival(): boolean {
+    return !this.closed && !this.displayTestController && !this.voiceFlowBusy() &&
+      ['dashboard', 'transcript', 'phone-reader', 'dashboard-reader'].includes(this.screen)
+  }
+
+  private clearArrival(): void {
+    if (this.bannerTimer !== undefined) window.clearTimeout(this.bannerTimer)
+    this.bannerTimer = undefined
+    this.arrivalBanner = undefined
+    this.arrivalTarget = null
+  }
+
+  private announceArrival(target: ArrivalTarget, text: string): void {
+    if (!this.canOpenArrival()) return
+    this.clearArrival()
+    this.arrivalTarget = target
+    this.arrivalBanner = text
+    this.bannerTimer = window.setTimeout(() => {
+      this.clearArrival()
+      if (!this.closed) void this.show(this.lastGlassesFrame).catch(() => undefined)
+    }, 10_000)
+  }
+
+  private async openArrival(target: ArrivalTarget): Promise<void> {
+    this.clearArrival()
+    const available = target.kind === 'phone'
+      ? this.phone.connected && this.phone.notifications.some(item => item.key === target.key && item.revision === target.revision)
+      : this.notifications.unread.some(item => item.threadId === target.threadId && item.turnId === target.turnId)
+    if (!available) { await this.show(this.lastGlassesFrame); return }
+    const generation = this.endpointGeneration
+    const origin = this.captureOrigin()
+    this.cancelTranscriptRefresh()
+    this.stopActivityPulse()
+    this.stopPlanPoll()
+    this.assistantOrigin = origin
+    this.responseBaselineMessageIds = null
+    this.planFlow = null
+    try {
+      if (target.kind === 'phone') {
+        this.phoneKey = target.key
+        this.phonePage = 0
+        this.screen = 'phone-reader'
+        await this.renderPhoneReader()
+      } else {
+        this.transcriptReturn = 'notifications'
+        await this.openTranscript(target.threadId)
+      }
+    } catch (error) {
+      if (generation !== this.endpointGeneration || this.closed) return
+      await this.restoreAssistantOrigin()
+      this.companion.setSettingsStatus?.(`Could not open notification: ${errorMessage(error)}`)
+    }
+  }
+
+  private async leavePhoneReader(): Promise<void> {
+    if (this.assistantOrigin) await this.restoreAssistantOrigin()
+    else await this.openNotifications(true)
   }
 
   private phoneReaderFrame(item: PhoneNotification): GlassesFrame {
@@ -472,7 +545,7 @@ export class EvenT3App {
   private async renderPhoneReader(): Promise<void> {
     const item = this.phone.notifications.find(item => item.key === this.phoneKey)
     if (item) await this.show(this.phoneReaderFrame(item))
-    else await this.openNotifications(true)
+    else await this.leavePhoneReader()
   }
 
   private async sendPhoneDraft(): Promise<void> {
@@ -489,7 +562,7 @@ export class EvenT3App {
         this.phoneKey = null
         this.voiceBackgroundFrame = null
         await this.refreshPhone()
-        await this.openNotifications(true)
+        await this.leavePhoneReader()
       } else if (result.status === 'unavailable') {
         this.screen = 'draft'
         await this.refreshPhone()
@@ -513,7 +586,7 @@ export class EvenT3App {
       const result = await this.requireClient().request('phone.notifications.dismiss', { key: item.key, revision: item.revision, commandId: createPhoneCommandId() })
       if (this.phoneDismissal !== pending) return
       this.phoneDismissal = null
-      if (result.status === 'dismissed') { this.phoneKey = null; await this.refreshPhone(); await this.openNotifications(true) }
+      if (result.status === 'dismissed') { this.phoneKey = null; await this.refreshPhone(); await this.leavePhoneReader() }
       else await this.showError('Dismissal not confirmed. Check phone.', 'notifications')
     } catch {
       if (this.phoneDismissal === pending) { this.phoneDismissal = null; await this.showError('Dismissal not confirmed. Check phone.', 'notifications') }
@@ -540,17 +613,31 @@ export class EvenT3App {
     if (!parsed) return
     snapshot = parsed
     if (this.latestSessions && Number(snapshot.snapshotId) < Number(this.latestSessions.snapshotId)) return
+    const hadSnapshot = this.latestSessions !== null
+    const previousUnread = new Set(this.notifications.unread.map(item => JSON.stringify([item.threadId, item.turnId])))
     this.latestSessions = snapshot
     this.notifications = reconcileNotifications(this.notifications, snapshot)
     if (this.screen === 'transcript' && this.transcript) {
       const viewed = [...snapshot.unsettled, ...snapshot.settled].find(session => session.id === this.transcript!.session.id)
       if (viewed) this.notifications = markSessionRead(this.notifications, viewed)
     }
+    const target = this.arrivalTarget
+    const bannerRemoved = target?.kind === 'thread' && !this.notifications.unread.some(item => item.threadId === target.threadId && item.turnId === target.turnId)
+    if (bannerRemoved) this.clearArrival()
+    const arrived = hadSnapshot ? this.notifications.unread.find(item => !previousUnread.has(JSON.stringify([item.threadId, item.turnId]))) : undefined
+    if (arrived) {
+      const session = [...snapshot.unsettled, ...snapshot.settled].find(item => item.id === arrived.threadId)
+      this.announceArrival({ kind: 'thread', threadId: arrived.threadId, turnId: arrived.turnId },
+        `T3 Code\n${notificationPreview(session ? `${session.projectTitle} · ${session.title}` : 'T3 session', 'A response is ready.')}`)
+    }
     this.persistNotifications()
     this.connectionLabel = 'Connected'
     // Live notification views share one reconciliation path. The session
     // browser and active reading/voice flows keep their own stable state.
     void this.refreshDashboards().catch(() => undefined)
+    if ((arrived || bannerRemoved) && this.screen !== 'dashboard' && this.screen !== 'notifications') {
+      void this.show(this.lastGlassesFrame).catch(() => undefined)
+    }
   }
 
   private async openDashboard(preserveSelection = false): Promise<void> {
@@ -588,11 +675,17 @@ export class EvenT3App {
   }
 
   private async openNotifications(preserveSelection = false): Promise<void> {
+    this.notificationItems = this.allNotificationCards()
+    if (preserveSelection && this.notificationItems.length === 0) {
+      this.notificationSelection = ''
+      this.dashboardSelection = 'notifications'
+      await this.openDashboard(true)
+      return
+    }
     this.cancelTranscriptRefresh()
     this.stopActivityPulse()
     this.screen = 'notifications'
     this.dashboardSelection = 'notifications'
-    this.notificationItems = this.allNotificationCards()
     this.rebuildDashboardCards()
     if (!preserveSelection || !this.notificationItems.some(card => card.key === this.notificationSelection)) this.notificationSelection = this.notificationItems[0]?.key ?? ''
     await this.renderNotifications(!preserveSelection)
@@ -608,7 +701,7 @@ export class EvenT3App {
     const subject = phone?.title || phone?.sender || phone?.thread || card?.notification?.label || card?.title || ''
     const message = phone?.text ?? (card?.action.kind === 'reader' ? card.action.text.replace(/^TEST ONLY\s+/, '') : card?.action.kind === 'alert' ? 'A response is ready.' : card?.body ?? '')
     const body = card ? notificationPreview(subject, message) : ''
-    await this.show({ ...this.dashboardFrame(), card: { title: card ? fitLines(source, 280, 1) : 'Notifications (0)', meta: card ? `${time}  ${index + 1}/${this.notificationItems.length}` : '',
+    await this.show({ ...this.dashboardFrame(), card: { title: card ? fitLines(source, 280, 1) : 'Notifications 0', meta: card ? `${time}  ${index + 1}/${this.notificationItems.length}` : '',
       body: body || 'No pending notifications.',
       placement: 'dashboard', presentation: 'notifications', entrance: enter ? 'down' : undefined,
       transition: enter ? ++this.motionSequence : undefined }, menuItems: [] })
@@ -768,10 +861,7 @@ export class EvenT3App {
     if (!this.canAskAssistant()) return
     this.assistantOpening = true
     const generation = this.endpointGeneration
-    const origin: AssistantOrigin = {
-      screen: this.screen, transcript: this.transcript, pages: this.transcriptPages, page: this.transcriptPage,
-      responseBaseline: this.responseBaselineMessageIds, transcriptReturn: this.transcriptReturn, previous: this.assistantOrigin,
-    }
+    const origin = this.captureOrigin()
     let readyToRecord = false
     try {
       const assistant = this.settings.assistant
@@ -809,20 +899,40 @@ export class EvenT3App {
     } finally { this.assistantOpening = false }
   }
 
+  private captureOrigin(): AssistantOrigin {
+    return {
+      screen: this.screen, transcript: this.transcript, pages: this.transcriptPages, page: this.transcriptPage,
+      responseBaseline: this.responseBaselineMessageIds, transcriptReturn: this.transcriptReturn, previous: this.assistantOrigin,
+      phoneKey: this.phoneKey, phonePage: this.phonePage, dashboardSelection: this.dashboardSelection,
+      notificationSelection: this.notificationSelection, dashboardReader: this.dashboardReader ? { ...this.dashboardReader } : null,
+      planFlow: this.planFlow,
+    }
+  }
+
   private async restoreAssistantOrigin(): Promise<void> {
     const origin = this.assistantOrigin
     if (!origin) { await this.openDashboard(); return }
     this.cancelTranscriptRefresh()
+    this.stopActivityPulse()
+    this.stopPlanPoll()
+    this.clearArrival()
     this.assistantOrigin = origin.previous
     this.transcript = origin.transcript
     this.transcriptPages = origin.pages
     this.transcriptPage = origin.page
     this.responseBaselineMessageIds = origin.responseBaseline
     this.transcriptReturn = origin.transcriptReturn
+    this.phoneKey = origin.phoneKey
+    this.phonePage = origin.phonePage
+    this.dashboardSelection = origin.dashboardSelection
+    this.notificationSelection = origin.notificationSelection
+    this.dashboardReader = origin.dashboardReader
+    this.planFlow = origin.planFlow
     this.screen = origin.screen
     switch (origin.screen) {
       case 'notifications': await this.openNotifications(true); break
       case 'dashboard-reader': await this.renderDashboardReader(); break
+      case 'phone-reader': await this.renderPhoneReader(); break
       case 'transcript':
         await this.renderTranscript()
         if (this.transcript) this.scheduleTranscriptRefresh(this.transcript.session.id)
@@ -916,7 +1026,7 @@ export class EvenT3App {
     this.cancelTranscriptRefresh()
     this.stopActivityPulse()
     const result = await this.requireClient().request('projects.list')
-    this.projects = [...result.projects].sort((left, right) => left.title.localeCompare(right.title))
+    this.projects = [...result.projects]
     this.projectRows = buildProjectRows(this.projects)
     this.projectSelection = firstSelectableKey(this.projectRows)
     this.projectsReturn = returnTo
@@ -1392,13 +1502,15 @@ export class EvenT3App {
     try {
       const result = await client.request('voice.finish')
       if (generation !== this.endpointGeneration || this.dictation !== dictation) return
+      const text = result.text.trim()
+      if (!text) throw new Error('No speech was detected. Nothing was sent.')
       this.dictation = null
       this.voiceDraft = {
         target: dictation.target,
         returnScreen: dictation.returnScreen,
-        text: result.text,
+        text,
         pages: paginateMessageText(
-          result.text,
+          text,
           { width: DASHBOARD_READER_BOX.width, height: dictation.target.kind === 'phone' ? 162 : 189 },
         ),
         page: 0,
@@ -1425,6 +1537,12 @@ export class EvenT3App {
   private async sendVoiceDraft(): Promise<void> {
     const draft = this.voiceDraft
     if (!draft) return
+    if (!draft.text.trim()) {
+      this.voiceDraft = null
+      this.voiceBackgroundFrame = null
+      await this.showError('No speech was detected. Nothing was sent.', draft.returnScreen)
+      return
+    }
     if (draft.target.kind === 'phone') { await this.sendPhoneDraft(); return }
     if (draft.returnScreen === 'plan') {
       const flow = this.planFlow
@@ -1433,7 +1551,6 @@ export class EvenT3App {
         await this.exitPlan()
         return
       }
-      if (!draft.text.trim()) throw new Error('Dictate an answer before accepting it.')
       const accepted = flow.accept({ questionId: flow.question.id, optionIndexes: [], text: draft.text.trim() })
       this.voiceDraft = null
       this.voiceBackgroundFrame = null
@@ -1489,7 +1606,10 @@ export class EvenT3App {
     this.voiceBackgroundFrame = null
     let cardRemoved: Promise<void>
     if (returnScreen === 'notifications') {
-      cardRemoved = this.openNotifications(true)
+      if (this.assistantOrigin && this.phoneKey) {
+        this.screen = 'phone-reader'
+        cardRemoved = this.renderPhoneReader()
+      } else cardRemoved = this.openNotifications(true)
     } else if (returnScreen === 'plan') {
       cardRemoved = this.exitPlan()
     } else if (returnScreen === 'assistant') {
@@ -1525,7 +1645,8 @@ export class EvenT3App {
 
   private errorReturnScreen: 'new-session' | 'transcript' | 'sessions' | 'projects' | 'draft' | 'dashboard' | 'notifications' | 'assistant' | 'plan' = 'sessions'
 
-  private async handleTap(): Promise<void> {
+  private async handleTap(arrival: ArrivalTarget | null = this.arrivalTarget): Promise<void> {
+    if (arrival && this.canOpenArrival()) { await this.openArrival(arrival); return }
     switch (this.screen) {
       case 'phone-reader':
         if (this.phone.connected && this.phoneKey) await this.beginDictation({ kind: 'phone', key: this.phoneKey }, 'notifications')
@@ -1638,10 +1759,14 @@ export class EvenT3App {
   }
 
   private async handleDoubleTap(): Promise<void> {
+    if (this.arrivalTarget) {
+      this.clearArrival()
+      if (!this.assistantOrigin) { await this.show(this.lastGlassesFrame); return }
+    }
     switch (this.screen) {
       case 'phone-reader':
         this.phoneKey = null
-        await this.openNotifications(true)
+        await this.leavePhoneReader()
         return
       case 'plan':
         await this.exitPlan()
@@ -1866,6 +1991,15 @@ export class EvenT3App {
       this.enqueue(() => this.handleDoubleTap())
       return
     }
+    if (this.canOpenArrival() && this.arrivalTarget && (
+      eventType === OsEventTypeList.SCROLL_TOP_EVENT || eventType === OsEventTypeList.SCROLL_BOTTOM_EVENT
+    )) {
+      // Consume the swipe against the visible dropdown before queued work or
+      // its expiry can turn it into navigation on the underlying screen.
+      this.clearArrival()
+      this.enqueue(() => this.show(this.lastGlassesFrame))
+      return
+    }
     if (eventType === OsEventTypeList.SCROLL_TOP_EVENT) {
       this.enqueue(() => this.handleScroll(-1))
       return
@@ -1875,7 +2009,10 @@ export class EvenT3App {
       return
     }
     if (eventType === OsEventTypeList.CLICK_EVENT) {
-      this.enqueue(() => this.handleTap())
+      // Bind the tap to the visible alert now, even if a refresh delays handling
+      // until after its timer expires or a newer alert arrives.
+      const arrival = this.canOpenArrival() ? this.arrivalTarget : null
+      this.enqueue(() => this.handleTap(arrival))
       return
     }
     if (
@@ -1981,7 +2118,6 @@ export class EvenT3App {
     this.eventQueue = this.eventQueue.then(async () => {
       if (!this.closed && generation === this.endpointGeneration) {
         await task()
-        await this.display.completePendingImages?.()
       }
     }).catch(async (error) => {
       if (this.closed || generation !== this.endpointGeneration) return
@@ -2035,6 +2171,7 @@ export class EvenT3App {
     }
     frame = { ...frame, motion: motion ? { ...motion, id: ++this.motionSequence } : undefined }
     if (this.screen === 'phone-reader' || (this.screen === 'notifications' && this.notificationItems.find(item => item.key === this.notificationSelection)?.action.kind === 'phone')) frame.menuItems = [{ itemID: DISMISS_PHONE_MENU_ID, itemName: 'Dismiss notification' }]
+    if (!this.canOpenArrival()) this.clearArrival()
     this.lastGlassesFrame = frame
     frame = { ...frame, banner: this.arrivalBanner }
     this.companion.setArrivalBanner?.(this.arrivalBanner)
@@ -2043,7 +2180,8 @@ export class EvenT3App {
       this.companion.setCardMirror ? frame.mirrorBody ?? frame.body : frame.card?.body ?? frame.mirrorBody ?? frame.body,
     )
     this.companion.setCardMirror?.(frame.card ?? null)
-    this.companion.setDashboardMirror?.(frame.dashboard?.left ?? null, frame.dashboard?.panel, frame.dashboard?.actions)
+    this.companion.setDashboardMirror?.(frame.dashboard?.left ?? null,
+      frame.dashboardSurface && this.companion.setOsMirror ? undefined : frame.dashboard?.panel, frame.dashboard?.actions)
     this.companion.setOsMirror?.(frame)
     await this.display.render(frame)
   }

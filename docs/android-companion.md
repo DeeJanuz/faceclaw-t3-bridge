@@ -18,9 +18,9 @@ Pairing saves credentials; app selection requires a live connection from Even Ph
 
 The shared inbox contains T3 completion alerts and Android notifications, ordered newest first with timestamps. New content updates the existing phone card and moves it up while keeping the selected item focused. Reading a phone notification leaves it active.
 
-Glasses package 0.3.2 restores separate home cards for Notifications, Ask assistant, and Sessions. The inbox, phone reader, and dashboard voice capture use a raised right-side card. Changing its shape updates only right-side images; reading, selection, and voice review use text updates. The clock/weather sidebar remains resident. Swipe to select or page, tap to open or reply, double tap to return, and hold a phone notification to dismiss it. Arrival banners restore the current text after four seconds. The existing Android APK remains compatible.
+Glasses package 0.3.2 restores separate home cards for Notifications, Ask assistant, and Sessions. The inbox, phone reader, and dashboard voice capture use a raised right-side card. Changing its shape updates only right-side images; reading, selection, and voice review use text updates. The clock/weather sidebar remains resident. Swipe to select or page, tap to open or reply, double tap to return, and hold a phone notification to dismiss it. Arrival banners restore the current text after ten seconds. The existing Android APK remains compatible.
 
-Tap a phone notification to read it, then tap to dictate. Tap to stop, review the recipient and complete draft, then tap to send. New incoming messages never cancel recording or steal focus. A top arrival banner uses at most two lines for the app, sender or thread, and truncated preview, and disappears within four seconds.
+Tap a phone notification to read it, then tap to dictate. Tap to stop, review the recipient and complete draft, then tap to send. New incoming messages never cancel recording or steal focus. A top arrival banner uses at most two lines for the app, sender or thread, and truncated preview, and disappears within ten seconds.
 
 Tap-and-hold opens the native contextual menu. In the phone notification reader, select **Dismiss notification** to dismiss without replying. Long press alone does not dismiss. Dismissal and confirmed reply handoff clear the notification on both devices. Android handoff confirms that the messaging app received the action, not delivery to the recipient. Newer content is preserved when detected before cancellation; Android does not offer an atomic reply-and-cancel transaction.
 
@@ -56,3 +56,24 @@ This command requires the running fixture bridge and debug APK, refuses physical
 For native rendering, run the Even simulator against `tests/manual/phone-native.html?scene=dashboard`, `?scene=reader`, or `?scene=dictation`. Its screenshot encodes brightness in alpha; composite the PNG over black to inspect it. These scenes verify the two-line banner using real SDK containers without real notification data.
 
 Run `npm run check:all` for frontend, bridge, and deployment regressions. Build and test the APK using the commands in the companion README.
+
+## Experimental Auto Display wake
+
+Update both the bridge and the Android companion, then open **Experimental display wake → Relay alerts to Even Auto Display** in the companion. Accept Android's notification permission prompt on Android 13+. **Android alert settings** opens the relay channel settings if notifications have been denied or disabled.
+
+Press **Send test display alert** once so the companion can appear in Even's notification source list. This requires the relay toggle and Android permission/channel; it sends only a generic local test, with no T3 or phone message.
+
+In the Even Realities app, enable Notifications, enable **Even Phone Companion** as a notification source, and turn on **Auto Display**. To avoid two native overlays for a tracked message, disable the original messaging app in Even's notification-source list while keeping it enabled in T3 Code Assistant's tracked-app list. The companion relay is off by default. After configuring Even, let the glasses sleep and press **Send test display alert** again to check wake.
+
+New T3 completions and eligible tracked text/app notifications generate a generic native alert with no message body. Existing inbox content is skipped on first connection, opt-in and reconnection. Bursts are combined into one replaceable notification; Android removes it after five seconds. Removing that Android notification does not establish that Even's overlay also disappears. T3 read failures leave tracked phone alerts available.
+
+[Even documents Auto Display](https://support.evenrealities.com/hc/en-us/articles/14274501482639-Notifications), but display wake while this Hub app runs is unverified until tested on physical glasses. Even owns the native overlay and may consume its tap gestures. T3 Code Assistant's ten-second dropdown opens its associated thread or phone reader only when the app receives the tap; double tap returns to the previous app view. Native notification taps are not a supported shortcut to a T3 thread. Android runtime permission follows the [platform notification permission model](https://developer.android.com/develop/ui/views/notifications/notification-permission).
+
+Device verification:
+
+1. With the dashboard visible, complete a new T3 turn. Check native alert forwarding, dropdown timing, tap-to-thread, and double-tap return. Repeat while reading another thread, including a non-first page.
+2. Let the glasses displays sleep, then complete a new T3 turn. Record whether they wake, which overlay appears, and which app receives a tap. Repeat with a new eligible SMS and an enabled linked app notification.
+3. Disable relay, deny Android notification permission, disable its channel, and disconnect/reconnect. Verify no relay while disabled and no flood of old alerts when restored. Phone reading/replying should remain available without the wake option.
+4. Send a short burst and update one existing notification. Verify one replaceable generic relay, no feedback loop, and no old relay after process restart. Repeat with original apps enabled and disabled in Even to assess duplicate overlays.
+
+The existing debug simulation remains available only in debug builds on its `simulation` channel; relay notifications cannot enter it. Unit tests and emulator checks cannot establish physical display wake, Even overlay lifetime, or native gesture delivery.

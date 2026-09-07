@@ -745,3 +745,78 @@ describe("HttpT3Client archive pagination", () => {
     await assert.rejects(() => new HttpT3Client(config(baseUrl)).threadPage("thread-1"), /pagination is unavailable/);
   });
 });
+
+describe("HttpT3Client session controls installed contract", () => {
+  const thread = { id: "thread-1", projectId: "project-1", title: "Fixture", runtimeMode: "approval-required" as const,
+    interactionMode: "default" as const, modelSelection: { instanceId: "codex", model: "gpt-5.6-sol",
+      options: [{ id: "reasoningEffort", value: "medium" }, { id: "serviceTier", value: "fast" }, { id: "other", value: true }] },
+    createdAt: "2026-09-04T10:00:00.000Z", updatedAt: "2026-09-04T10:00:00.000Z", archivedAt: null,
+    settledOverride: null, settledAt: null, latestTurn: null, session: null };
+  it("persists selected mode before starting the draft with unchanged runtime permissions", async () => {
+    const commands: Record<string, unknown>[] = [];
+    const base = await startUpstream(async (request, response) => {
+      assert.equal(request.headers.authorization, `Bearer ${T3_ACCESS_TOKEN}`);
+      commands.push(await readBody(request)); response.writeHead(200); response.end(JSON.stringify({ sequence: commands.length }));
+    });
+    await new HttpT3Client(config(base)).sendMessage({ thread, text: "Plan the change", interactionMode: "plan" });
+    assert.deepEqual(commands.map(c => c.type), ["thread.interaction-mode.set", "thread.turn.start"]);
+    assert.equal(commands[0]!.interactionMode, "plan");
+    assert.equal(commands[1]!.runtimeMode, "approval-required");
+    assert.equal(commands[1]!.interactionMode, "plan");
+    assert.equal("runtimeMode" in commands[0]!, false);
+  });
+  it("stops after rejected mode changes and does not retry failed turn starts", async () => {
+    for (const failureIndex of [1, 2]) {
+      const commands: Record<string, unknown>[] = [];
+      const base = await startUpstream(async (request, response) => {
+        commands.push(await readBody(request)); response.writeHead(commands.length === failureIndex ? 500 : 200);
+        response.end(JSON.stringify({ sequence: commands.length, error: "private failure" }));
+      });
+      await assert.rejects(new HttpT3Client(config(base)).sendMessage({ thread, text: "Reviewed draft", interactionMode: "plan" }), { code: "upstream_operation_failed" });
+      assert.equal(commands.length, failureIndex);
+    }
+  });
+  it("validates reasoning against fresh catalog and preserves every unrelated model option", async () => {
+    const commands: Record<string, unknown>[] = []; let catalogs = 0;
+    const base = await startUpstream(async (request, response) => {
+      if (request.method === "GET") {
+        response.writeHead(200); response.end(JSON.stringify({ snapshotSequence: 1, thread: { ...thread, messages: [] } })); return;
+      }
+      commands.push(await readBody(request)); response.writeHead(200); response.end(JSON.stringify({ sequence: 2 }));
+    }, () => { catalogs++; return providerConfig(); });
+    const client = new HttpT3Client(config(base));
+    await client.setReasoning({ thread, reasoningId: "high" });
+    assert.equal(commands[0]!.type, "thread.meta.update");
+    assert.deepEqual(commands[0]!.modelSelection, { ...thread.modelSelection, options: [
+      { id: "serviceTier", value: "fast" }, { id: "other", value: true }, { id: "reasoningEffort", value: "high" }] });
+    assert.equal("runtimeMode" in commands[0]!, false);
+    await assert.rejects(client.setReasoning({ thread, reasoningId: "invented" }), { code: "reasoning_selection_unavailable" });
+    assert.equal(catalogs, 2); assert.equal(commands.length, 1);
+  });
+  it("refuses a model or active-turn change during reasoning catalog lookup", async () => {
+    for (const changed of [{ ...thread, modelSelection: { ...thread.modelSelection, model: "changed" } },
+      { ...thread, session: { status: "running", activeTurnId: "active", updatedAt: thread.updatedAt } }]) {
+      let writes = 0;
+      const base = await startUpstream(async (request, response) => {
+        if (request.method === "POST") writes++;
+        response.writeHead(200); response.end(JSON.stringify({ snapshotSequence: 1, thread: { ...changed, messages: [] } }));
+      });
+      await assert.rejects(new HttpT3Client(config(base)).setReasoning({ thread, reasoningId: "high" }));
+      assert.equal(writes, 0);
+    }
+  });
+  it("approves via the exact proposed-plan source reference and stable command IDs", async () => {
+    const commands: Record<string, unknown>[] = [];
+    const base = await startUpstream(async (request, response) => {
+      commands.push(await readBody(request)); response.writeHead(200); response.end(JSON.stringify({ sequence: commands.length }));
+    });
+    await new HttpT3Client(config(base)).approvePlan({ thread: { ...thread, interactionMode: "plan" }, planId: "plan-1", planMarkdown: "Exact reviewed text", commandId: "even-implement-fixture" });
+    assert.deepEqual(commands.map(c => c.type), ["thread.interaction-mode.set", "thread.turn.start"]);
+    assert.equal(commands[0]!.commandId, "even-implement-fixture-mode");
+    assert.equal(commands[1]!.commandId, "even-implement-fixture");
+    assert.deepEqual(commands[1]!.sourceProposedPlan, { threadId: thread.id, planId: "plan-1" });
+    assert.equal(commands[1]!.runtimeMode, "approval-required");
+    assert.equal(commands[1]!.interactionMode, "default");
+    assert.equal((commands[1]!.message as Record<string, unknown>).text, "Implement this plan:\n\nExact reviewed text");
+  });
+});

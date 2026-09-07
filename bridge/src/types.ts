@@ -7,6 +7,9 @@ export type RuntimeMode =
   | "full-access";
 
 export interface BridgeConfig {
+  readonly signal?: { readonly cliPath: string; readonly dataDirectory: string };
+  readonly faceclawProjectId?: string;
+  readonly refinementCodexPath?: string;
   readonly archive?: { readonly projectId: string; readonly workspaceRoot: string } | null;
   readonly host: string;
   readonly port: number;
@@ -167,6 +170,8 @@ export interface T3LiveToolActivity {
 export interface T3Thread extends T3ThreadShell {
   readonly messages: readonly T3Message[];
   readonly activities?: readonly T3ThreadActivity[];
+  /** Structured proposed plans are untrusted upstream data. */
+  readonly proposedPlans?: readonly unknown[];
 }
 
 export interface T3ShellSnapshot {
@@ -190,6 +195,8 @@ export interface T3Descriptor {
 }
 
 export interface T3Client {
+  setReasoning?(input: { readonly thread: T3ThreadShell; readonly reasoningId: string }): Promise<{ readonly sequence: number }>;
+  approvePlan?(input: { readonly thread: T3ThreadShell; readonly planId: string; readonly planMarkdown: string; readonly commandId: string }): Promise<{ readonly sequence: number }>;
   settleThread(threadId: string): Promise<{ readonly sequence: number }>;
   respondToPlanInput(input: {
     readonly threadId: string;
@@ -212,6 +219,8 @@ export interface T3Client {
   sendMessage(input: {
     readonly thread: T3ThreadShell;
     readonly text: string;
+    readonly interactionMode?: "default" | "plan";
+    readonly reasoningId?: string;
   }): Promise<{ readonly sequence: number }>;
   steerMessage(input: {
     readonly thread: T3ThreadShell;

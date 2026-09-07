@@ -2,6 +2,8 @@
 
 Local, authenticated bridge for the Even Hub dashboard, an Android notification companion, and one T3 Code environment. The bridge exposes project/session reads, a reduced provider/model catalog, transcript reads, turn sends and steering, bounded activity summaries, voice transcription, and public weather lookups. It never exposes T3 filesystem, terminal, approval, account, or auth-management APIs. Speech recognition runs locally through whisper.cpp. No API key or cloud transcription service is required.
 
+The optional [Faceclaw integration](../docs/faceclaw.md) adds a separate native endpoint, on-demand Luna refinement, and a project-scoped Codex provider launcher for phone/glasses tools. Existing Hub and companion clients retain their routes and credential boundaries. Use the isolated Faceclaw fixture for emulator UI testing before selecting the new provider in T3.
+
 ## Security model
 
 The Even Hub WebView is an untrusted network client. The bridge holds the T3 credential and returns a reduced data model. It omits workspace paths, attachments, raw activity and tool payloads, tool results, and upstream error bodies. Live activity may include a bounded, redacted label such as an exact command preview. Transcript message text remains sensitive because showing it is the app's purpose.
@@ -269,3 +271,12 @@ While opted in and connected, a separate non-overlapping poll reads project-filt
 Android saves only receipt IDs/expiry in its existing encrypted storage before posting a generic native notification. The notification replaces the previous relay, expires on Android after five seconds, and posts at most once per three seconds. The companion's package is excluded from capture in release builds. Debug builds permit only the existing shell-protected `simulation` channel; the wake channel is excluded in every build.
 
 This is a best-effort route through Even's native notification forwarding, not an SDK display-wake command. See [setup and device verification](../docs/android-companion.md#experimental-auto-display-wake).
+
+
+### Existing-session controls
+
+Authenticated glasses RPC supports `thread.reasoning.set` with `threadId`, `reasoningId`, and `expectedModel: { instanceId, model }`. The bridge checks fresh project/thread visibility, rejects active turns or pending input, confirms the model has not changed, and validates reasoning against T3's fresh provider catalog. It updates `thread.meta.update.modelSelection` while preserving the provider, model, unrelated options, and runtime permissions.
+
+`turn.send` accepts optional `interactionMode` (`default` or `plan`) and `reasoningId`. Mode selection is persisted through `thread.interaction-mode.set` before starting the reviewed message. `turn.steer` accepts only `threadId` and `text`; active-turn mode/reasoning changes are rejected. Mode and turn start are separate T3 commands: a failed send may leave the selected mode in place and is never retried automatically.
+
+Transcripts expose `session.interactionMode`, the bounded public selection fields in `session.modelSelection`, and `pendingProposedPlan` when a completed plan is actionable. Older frontends can ignore these additive fields; frontends hide controls when the fields are absent. See [completed-plan approval and limitations](../docs/plan-questions.md#native-faceclaw-session-controls) for `plan.approve`.

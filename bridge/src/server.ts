@@ -1,10 +1,15 @@
 import { PhoneService, type PhoneSnapshot } from "./phone.js";
+import { SignalHttp } from './signal-http.js';
+import { FaceclawRelay, faceclawToken, mintToolToken, verifyToolToken } from './faceclaw.js';
+import { RefinementService } from './refinement.js';
+import { FaceclawProviderGrants } from './faceclaw-provider.js';
 import { AssistantArchive, type ArchiveStatus } from "./assistant-archive.js";
 import { randomUUID } from "node:crypto";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import { WebSocketServer, WebSocket, type RawData } from "ws";
 import { diagnosticOrigin } from "./pairing-diagnostics.js";
 import { WeatherService } from "./weather.js";
+import { SessionControlsService, freshAllowedThread, requireIdleSession } from "./session-controls.js";
 import { PlanInputService } from "./plan-input.js";
 import { BridgeServiceRegistry } from "./service-registry.js";
 import {
@@ -62,6 +67,8 @@ interface VoiceRecording {
 }
 
 interface SocketState {
+  nativeFaceclaw: boolean;
+  refinement: AbortController | null;
   readonly socket: WebSocket;
   readonly subscriptions: Set<string>;
   shellSequence: number | null;
@@ -329,6 +336,8 @@ class EventHub {
 
   add(socket: WebSocket): SocketState {
     const state: SocketState = {
+      nativeFaceclaw: false,
+      refinement: null,
       socket,
       subscriptions: new Set(),
       shellSequence: null,
@@ -362,6 +371,7 @@ class EventHub {
   }
 
   remove(state: SocketState): void {
+    state.refinement?.abort();
     if (state.voice !== null) {
       state.voice.abortController.abort();
       wipeRecording(state.voice);
@@ -485,13 +495,11 @@ async function sendTurn(
   config: BridgeConfig,
   threadId: string,
   text: string,
+  controls: { interactionMode?: "default" | "plan"; reasoningId?: string } = {},
 ) {
-  const shell = await client.shell();
-  const thread = findThread(shell, threadId, config);
-  if (thread.session?.status === "running" || thread.session?.status === "starting") {
-    throw new ApiError(409, "session_busy", "Wait for the current turn to finish");
-  }
-  const result = await client.sendMessage({ thread, text });
+  const thread = await freshAllowedThread(client, config, threadId);
+  requireIdleSession(thread);
+  const result = await client.sendMessage({ thread, text, ...controls });
   return { threadId, text, sequence: result.sequence };
 }
 
@@ -533,6 +541,7 @@ async function routeRpc(
   events: EventHub,
   services: BridgeServiceRegistry,
   phone: PhoneService,
+  controls: SessionControlsService,
 ): Promise<unknown> {
   switch (request.method) {
     case "phone.pairing.create": return phone.createPairing();
@@ -610,11 +619,23 @@ async function routeRpc(
       const result = await client.settleThread(threadId);
       return { threadId, settled: true, sequence: result.sequence };
     }
+    case "thread.reasoning.set": return controls.setReasoning(request.params);
     case "turn.send": {
       const threadId = requiredId(request.params, "threadId");
-      return sendTurn(client, config, threadId, parseText(request.params, config.maxTextChars));
+      if (Object.keys(request.params).some((key) => !["threadId", "text", "interactionMode", "reasoningId"].includes(key)) ||
+          (request.params.interactionMode !== undefined && request.params.interactionMode !== "default" && request.params.interactionMode !== "plan") ||
+          (request.params.reasoningId !== undefined && (typeof request.params.reasoningId !== "string" || !isSafeId(request.params.reasoningId)))) {
+        throw new ApiError(400, "invalid_request", "Invalid turn controls");
+      }
+      return sendTurn(client, config, threadId, parseText(request.params, config.maxTextChars), {
+        ...(request.params.interactionMode !== undefined ? { interactionMode: request.params.interactionMode } : {}),
+        ...(request.params.reasoningId !== undefined ? { reasoningId: request.params.reasoningId as string } : {}),
+      });
     }
     case "turn.steer": {
+      if (Object.keys(request.params).some((key) => !["threadId", "text"].includes(key))) {
+        throw new ApiError(400, "invalid_request", "Active turns cannot change mode or reasoning");
+      }
       const threadId = requiredId(request.params, "threadId");
       return steerTurn(client, config, threadId, parseText(request.params, config.maxTextChars));
     }
@@ -861,6 +882,15 @@ export function createBridgeServer(
   client: T3Client,
   transcriber: Transcriber,
 ): Server {
+  const signal = SignalHttp.create(config);
+  const nativeToken = faceclawToken(config.bridgeToken);
+  // Session tool credentials intentionally die with the bridge process, so old
+  // MCP request IDs cannot be replayed after the in-memory receipts are lost.
+  const toolSecret = randomUUID();
+  const providerGrants = new FaceclawProviderGrants(config, client, toolSecret);
+  const relay = new FaceclawRelay(config.faceclawProjectId);
+  const refinement = new RefinementService(config.refinementCodexPath);
+  const faceclawRpcLimiter = new FixedWindowRateLimiter(600);
   const limiter = new FixedWindowRateLimiter(config.rateLimitPerMinute);
   const pairingLimiter = new FixedWindowRateLimiter(
     PAIRING_ATTEMPTS_PER_WINDOW,
@@ -875,10 +905,11 @@ export function createBridgeServer(
   const archive = new AssistantArchive(config, client, (status) => events.archiveStatus(status));
   const weather = new WeatherService();
   const plan = new PlanInputService(client, config);
+  const controls = new SessionControlsService(client, config);
   // Services are explicitly composed here, never chosen by a client URL,
   // module path, or configuration supplied over the wire.
   const services = new BridgeServiceRegistry([
-    { namespace: "plan", methods: { submit: (params) => plan.submit(params) } },
+    { namespace: "plan", methods: { submit: (params) => plan.submit(params), approve: (params) => controls.approve(params) } },
     {
       namespace: "weather",
       methods: {
@@ -905,6 +936,78 @@ export function createBridgeServer(
         const isPhoneSync = request.url === "/v1/phone/sync";
         if (!(isPhoneSync ? phoneLimiter : limiter).allow(clientKey(request))) {
           throw new ApiError(429, "rate_limited", "Too many requests");
+        }
+        const url = new URL(request.url ?? '/', 'http://bridge.invalid');
+        if (signal) {
+          const handled = await signal.handle(request, response, url);
+          if (handled !== null) { status = handled; return; }
+        }
+        if (url.pathname.startsWith('/v1/faceclaw/')) {
+          if (request.headers.origin !== undefined || request.method !== 'POST' || url.search) {
+            throw new ApiError(403, 'native_only', 'Native Faceclaw endpoint required');
+          }
+          if (url.pathname === '/v1/faceclaw/pair') {
+            if (!pairingLimiter.allow(clientKey(request))) throw new ApiError(429, 'pairing_failed', 'Pairing failed');
+            const body = await readPairingBody(request);
+            if (Object.keys(body).length !== 1 || typeof body.passphrase !== 'string' || !pairingPassphraseMatches(body.passphrase, config.bridgePassphrase)) {
+              throw new ApiError(401, 'pairing_failed', 'Pairing failed');
+            }
+            sendJson(response, 200, { token: nativeToken }); status = 200; return;
+          }
+          if (url.pathname === '/v1/faceclaw/tool-credential') {
+            // Owner-only provisioning. Native phone and MCP credentials cannot mint capabilities.
+            if (!secretMatches(bearerToken(request), config.bridgeToken)) throw new ApiError(401, 'unauthorized', 'Owner credential required');
+            const body = await readJsonBody(request, 2048);
+            const threadId = requiredId(body, 'threadId');
+            const shell = await client.shell();
+            const thread = findThread(shell, threadId, config);
+            if (!config.faceclawProjectId || thread.projectId !== config.faceclawProjectId) throw new ApiError(403, 'tool_scope_denied', 'Assistant project is not enabled');
+            findProject(shell, thread.projectId, config);
+            const binding = { projectId: thread.projectId, threadId, expiresAt: Date.now() + 60 * 60_000 };
+            sendJson(response, 200, { ...binding, token: mintToolToken(toolSecret, binding) }); status = 200; return;
+          }
+          if (url.pathname === '/v1/faceclaw/provider-session') {
+            sendJson(response, 200, await providerGrants.issue(bearerToken(request), await readJsonBody(request, 8192))); status = 200; return;
+          }
+          if (url.pathname === '/v1/faceclaw/provider-renew' || url.pathname === '/v1/faceclaw/provider-revoke') {
+            const binding = verifyToolToken(toolSecret, bearerToken(request), config.faceclawProjectId);
+            const body = await readJsonBody(request, 1024);
+            const result = url.pathname.endsWith('-renew') ? providerGrants.renew(binding, body.leaseToken) : providerGrants.revoke(binding, body.leaseToken);
+            sendJson(response, 200, result); status = 200; return;
+          }
+          if (url.pathname === '/v1/faceclaw/mcp') {
+            const binding = verifyToolToken(toolSecret, bearerToken(request), config.faceclawProjectId);
+            const shell = await client.shell();
+            if (binding.providerSessionId) providerGrants.validate(binding);
+            else {
+              const thread = findThread(shell, binding.threadId!, config);
+              if (thread.projectId !== binding.projectId) throw new ApiError(403, 'tool_scope_denied', 'Assistant project is not enabled');
+            }
+            findProject(shell, binding.projectId, config);
+            const body = await readJsonBody(request, 16 * 1024);
+            if (body.jsonrpc !== '2.0' || typeof body.method !== 'string' ||
+                (body.id !== undefined && !(typeof body.id === 'string' && /^[A-Za-z0-9._:-]{1,128}$/.test(body.id)) && !(typeof body.id === 'number' && Number.isSafeInteger(body.id)))) {
+              throw new ApiError(400, 'invalid_request', 'Invalid MCP request');
+            }
+            if (body.method === 'notifications/initialized' && body.id === undefined) { response.writeHead(202); response.end(); status = 202; return; }
+            if (body.id === undefined) throw new ApiError(400, 'invalid_request', 'MCP request ID required');
+            let result: unknown;
+            try {
+              if (body.method === 'initialize') result = { protocolVersion: '2025-03-26', capabilities: { tools: { listChanged: false } }, serverInfo: { name: 'faceclaw-t3', version: '1.0.0' } };
+              else if (body.method === 'ping') result = {};
+              else if (body.method === 'tools/list') result = relay.list();
+              else if (body.method === 'tools/call') {
+                if (!body.params || typeof body.params !== 'object' || Array.isArray(body.params)) throw new ApiError(400, 'invalid_request', 'Invalid tool call');
+                result = await relay.call(binding, String(body.id), body.params as Record<string, unknown>);
+              } else throw new ApiError(404, 'method_not_found', 'MCP method not found');
+              sendJson(response, 200, { jsonrpc: '2.0', id: body.id, result });
+            } catch (error) {
+              const safe = error instanceof ApiError ? error : new ApiError(500, 'internal_error', 'Tool request failed');
+              sendJson(response, 200, { jsonrpc: '2.0', id: body.id, error: { code: -32000, message: safe.message, data: { code: safe.code } } });
+            }
+            status = 200; return;
+          }
+          throw new ApiError(404, 'not_found', 'Route not found');
         }
         status = await routeHttp(request, response, config, client, pairingLimiter, archive, phone);
       } catch (error) {
@@ -951,11 +1054,11 @@ export function createBridgeServer(
 
   server.on("upgrade", (request, socket, head) => {
     const url = new URL(request.url ?? "/", "http://bridge.invalid");
+    const native = url.pathname === '/v1/faceclaw/events';
     if (
-      url.pathname !== "/v1/events" ||
-      !originAllowed(request, config) ||
+      (native ? request.headers.origin !== undefined || !!url.search : url.pathname !== "/v1/events" || !originAllowed(request, config)) ||
       !limiter.allow(clientKey(request)) ||
-      !secretMatches(websocketToken(request), config.bridgeToken)
+      !secretMatches(websocketToken(request), native ? nativeToken : config.bridgeToken)
     ) {
       socket.write("HTTP/1.1 401 Unauthorized\r\nConnection: close\r\n\r\n");
       socket.destroy();
@@ -978,8 +1081,9 @@ export function createBridgeServer(
     });
   });
 
-  websocketServer.on("connection", (socket) => {
+  websocketServer.on("connection", (socket, handshake) => {
     const state = events.add(socket);
+    state.nativeFaceclaw = new URL(handshake.url ?? '/', 'http://bridge.invalid').pathname === '/v1/faceclaw/events';
     sendEvent(state, "archive.status", archive.status());
     sendEvent(state, "phone.changed", phone.snapshot());
     socket.on("pong", () => {
@@ -1018,7 +1122,7 @@ export function createBridgeServer(
       }
 
       const textData = rawDataBuffer(data);
-      if (textData.byteLength > MAX_WS_JSON_BYTES) {
+      if (textData.byteLength > (state.nativeFaceclaw ? MAX_WS_FRAME_BYTES : MAX_WS_JSON_BYTES)) {
         socket.close(1009, "Request is too large");
         return;
       }
@@ -1029,18 +1133,45 @@ export function createBridgeServer(
         sendRpcError(state, "invalid", error);
         return;
       }
-      void routeRpc(request, state, config, client, transcriber, events, services, phone).then(
+      const dispatch = async (): Promise<unknown> => {
+        if (state.nativeFaceclaw && request.method !== 'refinement.cancel' && request.method !== 'faceclaw.tools.result' && !faceclawRpcLimiter.allow(clientKey(handshake))) {
+          throw new ApiError(429, 'rate_limited', 'Too many Faceclaw requests');
+        }
+        if (request.method.startsWith('faceclaw.') || request.method.startsWith('refinement.')) {
+          if (!state.nativeFaceclaw) throw new ApiError(403, 'native_only', 'Faceclaw connection required');
+          switch (request.method) {
+            case 'faceclaw.tools.register': return relay.register(state, request.params, payload => sendEvent(state, 'faceclaw.tool.call', payload));
+            case 'faceclaw.tools.result': return relay.result(state, request.params);
+            case 'refinement.cancel': {
+              const cancelled = state.refinement !== null;
+              state.refinement?.abort();
+              return { cancelled };
+            }
+            case 'refinement.rewrite': {
+              if (state.refinement) throw new ApiError(409, 'refinement_busy', 'Refinement is already in progress');
+              const abort = new AbortController(); state.refinement = abort;
+              try { return await refinement.rewrite(request.params, abort.signal); }
+              finally { if (state.refinement === abort) state.refinement = null; }
+            }
+            default: throw new ApiError(404, 'method_not_found', 'Method not found');
+          }
+        }
+        return routeRpc(request, state, config, client, transcriber, events, services, phone, controls);
+      };
+      void dispatch().then(
         (result) => sendRpcResult(state, request.id, result),
         (error: unknown) => sendRpcError(state, request.id, error),
       );
     });
-    socket.on("close", () => events.remove(state));
+    socket.on("close", () => { relay.disconnect(state); events.remove(state); });
   });
 
   const heartbeat = setInterval(() => events.heartbeat(), 30_000);
   heartbeat.unref();
   server.once("listening", () => archive.start());
+  server.once('listening', () => signal?.start());
   server.on("close", () => {
+    signal?.close();
     archive.stop();
     phone.close();
     clearInterval(heartbeat);

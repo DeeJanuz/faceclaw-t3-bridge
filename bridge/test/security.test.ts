@@ -1825,7 +1825,8 @@ describe("WebSocket RPC and voice boundary", () => {
         assert.deepEqual(started.selection, params.modelSelection);
         assert.equal(started.project.id, project.id);
       }
-      assert.equal((await rpc(socket, "followup", "turn.send", { threadId: "older", text: "Follow up", runtimeMode: "full-access" })).ok, true);
+      assert.equal((await rpc(socket, "override-followup", "turn.send", { threadId: "older", text: "Follow up", runtimeMode: "full-access" })).ok, false);
+      assert.equal((await rpc(socket, "followup", "turn.send", { threadId: "older", text: "Follow up" })).ok, true);
       assert.equal(client.sends[0]?.thread.runtimeMode, "approval-required");
       socket.close();
     }

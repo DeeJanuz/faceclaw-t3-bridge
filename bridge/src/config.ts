@@ -109,6 +109,10 @@ function parseProjectIds(raw: string | undefined): ReadonlySet<string> | null {
 }
 
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): BridgeConfig {
+  const faceclawProjectId = env.BRIDGE_FACECLAW_PROJECT_ID?.trim() || undefined;
+  if (faceclawProjectId && !/^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/.test(faceclawProjectId)) throw new Error('Invalid BRIDGE_FACECLAW_PROJECT_ID');
+  const refinementCodexPath = env.BRIDGE_REFINEMENT_CODEX_PATH?.trim() || undefined;
+  if (refinementCodexPath && !isAbsolute(refinementCodexPath)) throw new Error('BRIDGE_REFINEMENT_CODEX_PATH must be absolute');
   const host = env.BRIDGE_HOST?.trim() || "127.0.0.1";
   const bridgeToken = required(env, "BRIDGE_TOKEN");
   if (!BASE64URL_SECRET.test(bridgeToken)) {
@@ -146,10 +150,19 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): BridgeConfig {
     throw new Error("BRIDGE_ARCHIVE_PROJECT_ID is invalid");
   }
   const projectIds = parseProjectIds(env.BRIDGE_PROJECT_IDS);
+  const signalCliPath = env.BRIDGE_SIGNAL_CLI_PATH;
+  const signalDataDirectory = env.BRIDGE_SIGNAL_DATA_DIR;
+  if (!!signalCliPath !== !!signalDataDirectory || [signalCliPath, signalDataDirectory].some(value =>
+    value !== undefined && (!isAbsolute(value) || normalize(value) !== value || /[\u0000\r\n]/.test(value)))) {
+    throw new Error('Signal requires normalized absolute BRIDGE_SIGNAL_CLI_PATH and BRIDGE_SIGNAL_DATA_DIR');
+  }
   if (archiveProject && archiveRoot && projectIds && !projectIds.has(archiveProject)) {
     throw new Error("Archive project must be in BRIDGE_PROJECT_IDS");
   }
   return {
+    ...(signalCliPath && signalDataDirectory ? { signal: { cliPath: signalCliPath, dataDirectory: signalDataDirectory } } : {}),
+    ...(faceclawProjectId ? { faceclawProjectId } : {}),
+    ...(refinementCodexPath ? { refinementCodexPath } : {}),
     archive: archiveProject && archiveRoot ? { projectId: archiveProject, workspaceRoot: archiveRoot } : null,
     host,
     port: integer(env, "BRIDGE_PORT", 8787, 1, 65535),

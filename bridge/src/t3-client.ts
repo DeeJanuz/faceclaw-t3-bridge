@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import WebSocket, { type RawData } from "ws";
 import { ApiError } from "./security.js";
+import { requireIdleSession } from "./session-controls.js";
 import type {
   BridgeConfig,
   T3CatalogModel,
@@ -490,7 +491,12 @@ export class HttpT3Client implements T3Client {
   async sendMessage(input: {
     readonly thread: T3ThreadShell;
     readonly text: string;
+    readonly interactionMode?: "default" | "plan";
+    readonly reasoningId?: string;
   }): Promise<{ readonly sequence: number }> {
+    if (input.reasoningId !== undefined) await this.setReasoning({ thread: input.thread, reasoningId: input.reasoningId });
+    const mode = input.interactionMode ?? input.thread.interactionMode;
+    if (mode !== input.thread.interactionMode) await this.setInteractionMode(input.thread.id, mode);
     const now = new Date().toISOString();
     return this.dispatch({
       type: "thread.turn.start",
@@ -503,9 +509,49 @@ export class HttpT3Client implements T3Client {
         attachments: [],
       },
       runtimeMode: input.thread.runtimeMode,
-      interactionMode: input.thread.interactionMode,
+      interactionMode: mode,
       createdAt: now,
     });
+  }
+
+  private async setInteractionMode(threadId: string, interactionMode: "default" | "plan", commandId: string = randomUUID()): Promise<{ readonly sequence: number }> {
+    // Current T3 reads persisted thread mode when starting a turn; a mode in
+    // the turn.start command alone does not switch it.
+    return this.dispatch({ type: "thread.interaction-mode.set", commandId, threadId,
+      interactionMode, createdAt: new Date().toISOString() });
+  }
+
+  async setReasoning(input: { readonly thread: T3ThreadShell; readonly reasoningId: string }): Promise<{ readonly sequence: number }> {
+    const selection = input.thread.modelSelection;
+    const catalog = await this.readModelCatalog();
+    const model = catalog.providers.find((provider) => provider.instanceId === selection.instanceId)
+      ?.models.find((model) => model.slug === selection.model);
+    const reasoning = model?.reasoning;
+    if (!reasoning || !reasoning.choices.some((choice) => choice.id === input.reasoningId)) {
+      throw new ApiError(409, "reasoning_selection_unavailable", "The selected reasoning level is not available for this model");
+    }
+    // Catalog lookup may take time. Re-read before the metadata write so a
+    // changed model, active turn, or updated unrelated option is not overwritten.
+    const current = (await this.thread(input.thread.id)).thread;
+    if (current.id !== input.thread.id || current.projectId !== input.thread.projectId || current.archivedAt !== null ||
+        current.modelSelection.instanceId !== selection.instanceId || current.modelSelection.model !== selection.model) {
+      throw new ApiError(409, "model_selection_changed", "The session model changed. Refresh the session.");
+    }
+    requireIdleSession(current);
+    // Preserve provider, model, speed and every unrelated existing option.
+    const options = [...(current.modelSelection.options ?? []).filter((option) => option.id !== reasoning.t3OptionId),
+      { id: reasoning.t3OptionId, value: input.reasoningId }];
+    return this.dispatch({ type: "thread.meta.update", commandId: randomUUID(), threadId: input.thread.id,
+      modelSelection: { ...current.modelSelection, options } });
+  }
+
+  async approvePlan(input: { readonly thread: T3ThreadShell; readonly planId: string; readonly planMarkdown: string; readonly commandId: string }): Promise<{ readonly sequence: number }> {
+    await this.setInteractionMode(input.thread.id, "default", `${input.commandId}-mode`);
+    return this.dispatch({ type: "thread.turn.start", commandId: input.commandId, threadId: input.thread.id,
+      message: { messageId: `${input.commandId}-message`, role: "user",
+        text: `Implement this plan:\n\n${input.planMarkdown}`, attachments: [] },
+      sourceProposedPlan: { threadId: input.thread.id, planId: input.planId },
+      runtimeMode: input.thread.runtimeMode, interactionMode: "default", createdAt: new Date().toISOString() });
   }
 
   async steerMessage(input: {

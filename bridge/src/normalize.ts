@@ -1,3 +1,4 @@
+import { normalizePendingProposedPlan } from "./session-controls.js";
 import { ApiError, isSafeId } from "./security.js";
 import { normalizePendingPlanInput } from "./plan-input.js";
 import type {
@@ -630,6 +631,21 @@ function normalizeTranscriptThread(thread: T3Thread): TranscriptTurn[] {
   return turns;
 }
 
+function normalizeSessionSettings(thread: T3ThreadShell): { interactionMode?: "default" | "plan"; modelSelection?: { instanceId: string; model: string; reasoningId?: string } } {
+  const bounded = (value: unknown, max: number): value is string => typeof value === "string" &&
+    value.length > 0 && value.length <= max && value.trim() === value && !/[\u0000-\u001f\u007f]/u.test(value);
+  const selection = thread.modelSelection;
+  const mode = thread.interactionMode === "default" || thread.interactionMode === "plan" ? thread.interactionMode : undefined;
+  if (!selection || !bounded(selection.instanceId, 128) || !bounded(selection.model, 256)) {
+    return mode === undefined ? {} : { interactionMode: mode };
+  }
+  const reasoning = Array.isArray(selection.options) && selection.options.length <= 64
+    ? selection.options.find((option) => option && ["reasoningEffort", "effort"].includes(option.id) && bounded(option.value, 128))?.value : undefined;
+  return { ...(mode === undefined ? {} : { interactionMode: mode }),
+    modelSelection: { instanceId: selection.instanceId, model: selection.model,
+      ...(typeof reasoning === "string" ? { reasoningId: reasoning } : {}) } };
+}
+
 export function normalizeTranscript(snapshot: T3ThreadSnapshot, projectTitle = "Unknown project") {
   return {
     snapshotId: String(snapshot.snapshotSequence),
@@ -642,10 +658,12 @@ export function normalizeTranscript(snapshot: T3ThreadSnapshot, projectTitle = "
       lastActivityAt: activityAt(snapshot.thread),
       settled: snapshot.thread.settledOverride === "settled",
       completedTurn: completedTurn(snapshot.thread),
+      ...normalizeSessionSettings(snapshot.thread),
     },
     liveActivity: normalizeLiveActivity(snapshot.thread),
     liveActivities: normalizeLiveToolActivities(snapshot.thread),
     pendingPlanInput: normalizePendingPlanInput(snapshot.thread),
+    pendingProposedPlan: normalizePendingProposedPlan(snapshot.thread),
     turns: normalizeTranscriptThread(snapshot.thread),
   };
 }

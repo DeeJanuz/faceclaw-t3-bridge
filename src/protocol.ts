@@ -99,7 +99,14 @@ export interface LiveToolActivity {
   completedAt: string | null
 }
 
+export interface SessionTokenUsage {
+  contextTokens: number | null
+  totalTokens: number | null
+  updatedAt: string | null
+}
+
 export interface TranscriptResult {
+  tokenUsage?: SessionTokenUsage
   snapshotId: string
   session: SessionSummary
   turns: TranscriptTurn[]

@@ -1,3 +1,4 @@
+import { normalizeTokenUsage } from "./token-usage.js";
 import { normalizePendingProposedPlan } from "./session-controls.js";
 import { ApiError, isSafeId } from "./security.js";
 import { normalizePendingPlanInput } from "./plan-input.js";
@@ -660,6 +661,7 @@ export function normalizeTranscript(snapshot: T3ThreadSnapshot, projectTitle = "
       completedTurn: completedTurn(snapshot.thread),
       ...normalizeSessionSettings(snapshot.thread),
     },
+    tokenUsage: normalizeTokenUsage(snapshot.thread.activities),
     liveActivity: normalizeLiveActivity(snapshot.thread),
     liveActivities: normalizeLiveToolActivities(snapshot.thread),
     pendingPlanInput: normalizePendingPlanInput(snapshot.thread),

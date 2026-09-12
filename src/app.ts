@@ -8,7 +8,7 @@ import {
   type EvenHubEvent,
 } from '@evenrealities/even_hub_sdk'
 import { T3BridgeClient } from './bridge-client'
-import { transcriptChangedThreadId } from './bridge-events'
+import { transcriptChangedSession } from './bridge-events'
 import type { CompanionUi, ConnectionProfile, PairingRequest } from './companion-ui'
 import {
   developmentBridgeUrlFromQuery,
@@ -19,14 +19,14 @@ import {
 import { DASHBOARD_READER_BOX, GlassesDisplay, voiceOverlay, type GlassesFrame } from './glasses-display'
 import { inputCode, inputLabel, inputTypeFromEvenHubEvent } from './input-events'
 import { runIntegratedDisplayTests, type DisplayTestSelection } from './display-diagnostics'
-import { ASK_ASSISTANT_MENU_ID, SETTLE_SESSION_MENU_ID, emptyNotifications, fitLines, markSessionRead, notificationCards, notificationStorageKey, parseNotifications, parseSessionsSnapshot, reconcileNotifications, type DashboardCard } from './dashboard'
+import { ASK_ASSISTANT_MENU_ID, SETTLE_SESSION_MENU_ID, emptyNotifications, fitLines, markSessionRead, notificationCards, notificationKey, notificationStorageKey, parseNotifications, parseSessionsSnapshot, reconcileNotifications, type DashboardCard } from './dashboard'
 import { dashboardClock } from './dashboard-clock'
 import { DashboardRegistry, type DashboardModule } from './dashboard-modules'
 import { defaultDashboardSettings, loadDashboardSettings, parseDashboardSettings, parseWeatherLocation, saveDashboardSettings, validateAssistantSelection, type DashboardSettings } from './dashboard-settings'
 import { WeatherController } from './weather'
 import { DeviceStatusController } from './device-status'
 import { PlanFlow, PLAN_NEXT_MENU_ID, PLAN_PREVIOUS_MENU_ID, PLAN_REVIEW_MENU_ID } from './plan-flow'
-import { BridgeRequestError } from './protocol'
+import { BridgeRequestError, environmentParameter, projectIdentity, sessionIdentity } from './protocol'
 import { loadPlanDraft, savePlanDraft, clearPlanDraft, parsePendingPlanInput, validatePlanDraftAnswers } from './plan-drafts'
 import type {
   ProjectSummary,
@@ -141,7 +141,7 @@ interface AssistantOrigin {
 }
 
 type ArrivalTarget = { kind: 'phone'; key: string; revision: string }
-  | { kind: 'thread'; threadId: string; turnId: string }
+  | { kind: 'thread'; threadId: string; environmentId?: string; turnId: string }
 
 export class EvenT3App {
   private readonly display: GlassesDisplay
@@ -503,7 +503,8 @@ export class EvenT3App {
     this.clearArrival()
     const available = target.kind === 'phone'
       ? this.phone.connected && this.phone.notifications.some(item => item.key === target.key && item.revision === target.revision)
-      : this.notifications.unread.some(item => item.threadId === target.threadId && item.turnId === target.turnId)
+      : this.notifications.unread.some(item => item.threadId === target.threadId &&
+        item.environmentId === target.environmentId && item.turnId === target.turnId)
     if (!available) { await this.show(this.lastGlassesFrame); return }
     const generation = this.endpointGeneration
     const origin = this.captureOrigin()
@@ -521,7 +522,7 @@ export class EvenT3App {
         await this.renderPhoneReader()
       } else {
         this.transcriptReturn = 'notifications'
-        await this.openTranscript(target.threadId)
+        await this.openTranscript(target.threadId, true, false, target.environmentId)
       }
     } catch (error) {
       if (generation !== this.endpointGeneration || this.closed) return
@@ -612,22 +613,32 @@ export class EvenT3App {
     const parsed = parseSessionsSnapshot(snapshot)
     if (!parsed) return
     snapshot = parsed
-    if (this.latestSessions && Number(snapshot.snapshotId) < Number(this.latestSessions.snapshotId)) return
+    if (this.latestSessions) {
+      const nextSequence = Number(snapshot.snapshotId)
+      const previousSequence = Number(this.latestSessions.snapshotId)
+      const older = Number.isFinite(nextSequence) && Number.isFinite(previousSequence)
+        ? nextSequence < previousSequence
+        : snapshot.frozenAt < this.latestSessions.frozenAt
+      if (older) return
+    }
     const hadSnapshot = this.latestSessions !== null
-    const previousUnread = new Set(this.notifications.unread.map(item => JSON.stringify([item.threadId, item.turnId])))
+    const previousUnread = new Set(this.notifications.unread.map(notificationKey))
     this.latestSessions = snapshot
     this.notifications = reconcileNotifications(this.notifications, snapshot)
     if (this.screen === 'transcript' && this.transcript) {
-      const viewed = [...snapshot.unsettled, ...snapshot.settled].find(session => session.id === this.transcript!.session.id)
+      const viewed = [...snapshot.unsettled, ...snapshot.settled].find(session => this.sameSession(session, this.transcript!.session))
       if (viewed) this.notifications = markSessionRead(this.notifications, viewed)
     }
     const target = this.arrivalTarget
-    const bannerRemoved = target?.kind === 'thread' && !this.notifications.unread.some(item => item.threadId === target.threadId && item.turnId === target.turnId)
+    const bannerRemoved = target?.kind === 'thread' && !this.notifications.unread.some(item =>
+      item.environmentId === target.environmentId && item.threadId === target.threadId && item.turnId === target.turnId)
     if (bannerRemoved) this.clearArrival()
-    const arrived = hadSnapshot ? this.notifications.unread.find(item => !previousUnread.has(JSON.stringify([item.threadId, item.turnId]))) : undefined
+    const arrived = hadSnapshot ? this.notifications.unread.find(item => !previousUnread.has(notificationKey(item))) : undefined
     if (arrived) {
-      const session = [...snapshot.unsettled, ...snapshot.settled].find(item => item.id === arrived.threadId)
-      this.announceArrival({ kind: 'thread', threadId: arrived.threadId, turnId: arrived.turnId },
+      const session = [...snapshot.unsettled, ...snapshot.settled].find(item =>
+        item.environmentId === arrived.environmentId && item.id === arrived.threadId)
+      this.announceArrival({ kind: 'thread', ...(arrived.environmentId ? { environmentId: arrived.environmentId } : {}),
+        threadId: arrived.threadId, turnId: arrived.turnId },
         `T3 Code\n${notificationPreview(session ? `${session.projectTitle} · ${session.title}` : 'T3 session', 'A response is ready.')}`)
     }
     this.persistNotifications()
@@ -712,7 +723,7 @@ export class EvenT3App {
     await this.openNotifications(true)
   }
 
-  private clearSessionNotifications(session: Pick<SessionSummary, 'id' | 'completedTurn'>): void {
+  private clearSessionNotifications(session: Pick<SessionSummary, 'id' | 'environmentId' | 'completedTurn'>): void {
     const updated = markSessionRead(this.notifications, session)
     if (updated === this.notifications) return
     this.notifications = updated
@@ -884,7 +895,8 @@ export class EvenT3App {
       this.cancelTranscriptRefresh()
       this.stopActivityPulse()
       this.transcript = null
-      await this.beginDictation({ kind: 'assistant', projectId: assistant.projectId, modelSelection: assistant.modelSelection }, 'assistant')
+      await this.beginDictation({ kind: 'assistant', ...environmentParameter(assistant),
+        projectId: assistant.projectId, modelSelection: assistant.modelSelection }, 'assistant')
     } catch (error) {
       if (generation === this.endpointGeneration) {
         if (!readyToRecord && origin.screen === 'dashboard') {
@@ -935,7 +947,10 @@ export class EvenT3App {
       case 'phone-reader': await this.renderPhoneReader(); break
       case 'transcript':
         await this.renderTranscript()
-        if (this.transcript) this.scheduleTranscriptRefresh(this.transcript.session.id)
+        if (this.transcript) this.scheduleTranscriptRefresh(
+          this.transcript.session.id,
+          this.transcript.session.environmentId,
+        )
         break
       case 'sessions': await this.renderSessions(); break
       case 'projects': await this.renderProjects(); break
@@ -977,40 +992,43 @@ export class EvenT3App {
 
   private settleCandidate(): string | null {
     if (this.settlementPending || !this.canAskAssistant()) return null
-    const id = this.screen === 'sessions' ? selectedValue(this.sessionRows, this.sessionSelection)
-      : this.screen === 'transcript' ? this.transcript?.session.id : null
-    if (!id) return null
+    const identity = this.screen === 'sessions' ? selectedValue(this.sessionRows, this.sessionSelection)
+      : this.screen === 'transcript' && this.transcript ? sessionIdentity(this.transcript.session) : null
+    if (!identity) return null
     if (this.screen === 'transcript' && (this.transcript?.pendingPlanInput
       || ['running', 'starting'].includes(this.transcript?.session.status ?? ''))) return null
     const session = this.latestSessions
-      ? [...this.latestSessions.unsettled, ...this.latestSessions.settled].find(item => item.id === id)
-      : this.transcript?.session.id === id ? this.transcript.session : undefined
-    return session && !session.settled && !['running', 'starting'].includes(session.status) ? id : null
+      ? [...this.latestSessions.unsettled, ...this.latestSessions.settled].find(item => sessionIdentity(item) === identity)
+      : this.transcript && sessionIdentity(this.transcript.session) === identity ? this.transcript.session : undefined
+    return session && !session.settled && !['running', 'starting'].includes(session.status) ? identity : null
   }
 
-  private async settleSession(threadId: string): Promise<void> {
-    if (this.settleCandidate() !== threadId) return
+  private async settleSession(identity: string): Promise<void> {
+    if (this.settleCandidate() !== identity) return
+    const selected = this.sessionForIdentity(identity)
+    if (!selected) return
+    const threadId = selected.id
     const generation = this.endpointGeneration
     this.settlementPending = true
     try {
-      await this.requireClient().request('thread.settle', { threadId })
+      await this.requireClient().request('thread.settle', { ...environmentParameter(selected), threadId })
       if (generation !== this.endpointGeneration || this.closed) return
       // Move only the explicitly settled row; keep unrelated browsing frozen.
       if (this.sessions) {
         const all = [...this.sessions.unsettled, ...this.sessions.settled]
-          .map(session => session.id === threadId ? { ...session, settled: true } : session)
+          .map(session => sessionIdentity(session) === identity ? { ...session, settled: true } : session)
         this.sessions = freezeSessionOrder({ ...this.sessions,
           unsettled: all.filter(session => !session.settled), settled: all.filter(session => session.settled) })
         this.sessionRows = buildSessionRows(this.sessions, Date.now(), this.projects)
       }
       if (this.latestSessions) {
         const all = [...this.latestSessions.unsettled, ...this.latestSessions.settled]
-          .map(session => session.id === threadId ? { ...session, settled: true } : session)
+          .map(session => sessionIdentity(session) === identity ? { ...session, settled: true } : session)
         this.latestSessions = { ...this.latestSessions,
           unsettled: all.filter(session => !session.settled), settled: all.filter(session => session.settled) }
       }
-      this.clearSessionNotifications({ id: threadId })
-      if (this.transcript?.session.id === threadId) this.transcript.session = { ...this.transcript.session, settled: true }
+      this.clearSessionNotifications(selected)
+      if (this.transcript && sessionIdentity(this.transcript.session) === identity) this.transcript.session = { ...this.transcript.session, settled: true }
     } finally { this.settlementPending = false }
     if (this.screen === 'sessions') await this.renderSessions()
     else if (this.screen === 'transcript') await this.renderTranscript()
@@ -1045,11 +1063,11 @@ export class EvenT3App {
     await this.renderProjects()
   }
 
-  private async openModels(projectId: string): Promise<void> {
-    const project = this.projects.find((candidate) => candidate.id === projectId)
+  private async openModels(projectKey: string): Promise<void> {
+    const project = this.projectForIdentity(projectKey)
     if (!project) throw new Error('The selected project is no longer available')
     this.selectedProject = project
-    const result = await this.requireClient().request('models.list')
+    const result = await this.requireClient().request('models.list', environmentParameter(project))
     this.models = result.models
     this.modelRows = buildModelRows(this.models)
     this.modelSelection = defaultModelKey(this.models)
@@ -1115,13 +1133,16 @@ export class EvenT3App {
     threadId: string,
     followLatest = true,
     preserveScreen = false,
+    environmentId?: string,
   ): Promise<void> {
     const generation = this.endpointGeneration
     const previousScreen = this.screen
     const wasLastPage = this.transcriptPage === this.transcriptPages.length - 1
     const previousPages = this.transcriptPages
     const previousPage = this.transcriptPage
-    const result = await this.requireClient().request('transcript.get', { threadId })
+    const result = await this.requireClient().request('transcript.get', {
+      ...(environmentId ? { environmentId } : {}), threadId,
+    })
     if (generation !== this.endpointGeneration || this.closed) return
     result.pendingPlanInput = parsePendingPlanInput(result.pendingPlanInput)
     this.transcript = result
@@ -1186,28 +1207,31 @@ export class EvenT3App {
     const generation = this.endpointGeneration
     const request = result.pendingPlanInput
     const previous = this.planFlow
-    if (previous && (previous.threadId !== result.session.id || previous.request.revision !== request?.revision)) {
-      if (previous.threadId === result.session.id) {
+    const sameEnvironment = previous?.environmentId === result.session.environmentId
+    if (previous && (previous.threadId !== result.session.id || !sameEnvironment || previous.request.revision !== request?.revision)) {
+      if (previous.threadId === result.session.id && sameEnvironment) {
         this.planFlows.delete(this.planKey(previous))
-        void clearPlanDraft(this.evenBridge, this.endpoint, previous.threadId, previous.request).catch(() => undefined)
+        void clearPlanDraft(this.evenBridge, this.endpoint, previous.threadId, previous.request,
+          previous.environmentId).catch(() => undefined)
       }
       this.planFlow = null
       if (this.screen === 'plan') this.screen = 'transcript'
     }
     if (request && ['transcript', 'plan'].includes(this.screen)) {
-      const key = `${this.endpoint}|${result.session.id}|${request.revision}`
+      const key = `${this.endpoint}|${sessionIdentity(result.session)}|${request.revision}`
       let flow = this.planFlows.get(key)
       if (!flow) {
-        flow = new PlanFlow(result.session.id, request)
+        flow = new PlanFlow(result.session.id, request, [], result.session.environmentId)
         flow.stage = 'loading'
         this.planFlows.set(key, flow)
         if (this.planFlows.size > 12) this.planFlows.delete(this.planFlows.keys().next().value!)
         const loading = flow
         // Reading phone storage runs outside the gesture queue. A loading card
         // is inert but remains dismissible, even if the native bridge hangs.
-        void loadPlanDraft(this.evenBridge, this.endpoint, result.session.id, request).then(async saved => {
+        void loadPlanDraft(this.evenBridge, this.endpoint, result.session.id, request,
+          result.session.environmentId).then(async saved => {
           if (generation !== this.endpointGeneration || this.closed || this.planFlows.get(key) !== loading) return
-          const restored = new PlanFlow(result.session.id, request, saved.answers)
+          const restored = new PlanFlow(result.session.id, request, saved.answers, result.session.environmentId)
           loading.answers = restored.answers
           loading.questionIndex = restored.questionIndex
           loading.stage = saved.submitted ? 'uncertain' : 'question'
@@ -1221,12 +1245,16 @@ export class EvenT3App {
     } else if (!request) this.stopPlanPoll()
   }
 
-  private planKey(flow: PlanFlow): string { return `${this.endpoint}|${flow.threadId}|${flow.request.revision}` }
+  private planKey(flow: PlanFlow): string {
+    return `${this.endpoint}|${sessionIdentity({ id: flow.threadId, environmentId: flow.environmentId })}|${flow.request.revision}`
+  }
 
   private startPlanPoll(): void {
     if (this.planPollTimer !== null) return
     this.planPollTimer = window.setInterval(() => {
-      if (this.screen === 'plan' && this.planFlow) this.scheduleTranscriptRefresh(this.planFlow.threadId)
+      if (this.screen === 'plan' && this.planFlow) {
+        this.scheduleTranscriptRefresh(this.planFlow.threadId, this.planFlow.environmentId)
+      }
     }, 5000)
   }
 
@@ -1246,7 +1274,8 @@ export class EvenT3App {
     const generation = this.endpointGeneration
     if (this.closed || this.planFlow !== flow) return
     try {
-      const saved = await savePlanDraft(this.evenBridge, this.endpoint, flow.threadId, flow.request, flow.answers, submitted)
+      const saved = await savePlanDraft(this.evenBridge, this.endpoint, flow.threadId, flow.request,
+        flow.answers, submitted, flow.environmentId)
       if (this.closed || generation !== this.endpointGeneration) return
       if (!saved) throw new Error('Storage unavailable')
       flow.notice = ''
@@ -1264,7 +1293,8 @@ export class EvenT3App {
     if (action === 'dictate') {
       // Native microphone startup must not trap the double-tap exit gesture.
       const generation = this.endpointGeneration
-      void this.beginDictation({ kind: 'thread', threadId: flow.threadId }, 'plan').catch(async error => {
+      void this.beginDictation({ kind: 'thread', ...environmentParameter(flow),
+        threadId: flow.threadId }, 'plan').catch(async error => {
         if (!this.closed && generation === this.endpointGeneration && this.planFlow === flow && ['plan', 'dictating'].includes(this.screen)) {
           await this.showError(errorMessage(error), 'plan')
         }
@@ -1287,14 +1317,16 @@ export class EvenT3App {
 
   private async submitPlan(flow: PlanFlow): Promise<void> {
     if (this.closed || this.planFlow !== flow || !flow.complete || flow.stage !== 'submitting' ||
-        this.transcript?.session.id !== flow.threadId || this.transcript.pendingPlanInput?.revision !== flow.request.revision) return
+        this.transcript?.session.id !== flow.threadId ||
+        this.transcript.session.environmentId !== flow.environmentId ||
+        this.transcript.pendingPlanInput?.revision !== flow.request.revision) return
     const generation = this.endpointGeneration
     try {
       const client = this.requireClient()
       await this.savePlanChoices(flow, true)
       if (generation !== this.endpointGeneration || this.closed || this.client !== client ||
           this.planFlow !== flow || this.transcript?.pendingPlanInput?.revision !== flow.request.revision) return
-      await client.request('plan.submit', { threadId: flow.threadId, requestId: flow.request.requestId,
+      await client.request('plan.submit', { ...environmentParameter(flow), threadId: flow.threadId, requestId: flow.request.requestId,
         revision: flow.request.revision, answers: flow.answers })
       flow.stage = 'uncertain'
     } catch (error) {
@@ -1304,7 +1336,7 @@ export class EvenT3App {
           !this.closed && generation === this.endpointGeneration) {
         // This exact bridge error is emitted only by pre-dispatch validation.
         // It is therefore safe to remove the local send lock and edit again.
-        await clearPlanDraft(this.evenBridge, this.endpoint, flow.threadId, flow.request)
+        await clearPlanDraft(this.evenBridge, this.endpoint, flow.threadId, flow.request, flow.environmentId)
         flow.stage = 'review'
         await this.savePlanChoices(flow)
         flow.notice = 'T3 rejected these answers before sending. Review and shorten them.'
@@ -1314,7 +1346,7 @@ export class EvenT3App {
     if (generation !== this.endpointGeneration || this.closed) return
     if (this.screen === 'plan' && this.planFlow === flow) {
       await this.renderPlan().catch(() => undefined)
-      this.scheduleTranscriptRefresh(flow.threadId)
+      this.scheduleTranscriptRefresh(flow.threadId, flow.environmentId)
     }
   }
 
@@ -1574,10 +1606,12 @@ export class EvenT3App {
         && ['running', 'starting'].includes(this.transcript?.session.status ?? '')
       const result = draft.target.kind === 'thread'
         ? await client.request(sessionWorking ? 'turn.steer' : 'turn.send', {
+            ...environmentParameter(draft.target),
             threadId: draft.target.threadId,
             text: draft.text,
           })
         : await client.request(draft.target.kind === 'assistant' ? 'assistant.start' : 'thread.start', {
+            ...environmentParameter(draft.target),
             projectId: draft.target.projectId,
             modelSelection: draft.target.modelSelection,
             text: draft.text,
@@ -1585,7 +1619,7 @@ export class EvenT3App {
       if (generation !== this.endpointGeneration) return
       this.voiceDraft = null
       this.voiceBackgroundFrame = null
-      await this.openTranscript(result.threadId, true)
+      await this.openTranscript(result.threadId, true, false, result.environmentId ?? draft.target.environmentId)
     } catch (error) {
       if (generation !== this.endpointGeneration) return
       this.responseBaselineMessageIds = null
@@ -1676,7 +1710,7 @@ export class EvenT3App {
         } else if (card?.action.kind === 'alert') {
           this.assistantOrigin = null
           this.transcriptReturn = 'notifications'
-          await this.openTranscript(card.action.alert.threadId)
+          await this.openTranscript(card.action.alert.threadId, true, false, card.action.alert.environmentId)
         } else if (card?.action.kind === 'reader') {
           this.dashboardReader = { title: card.action.title, pages: paginateText(card.action.text, DASHBOARD_READER_BOX), page: 0, returnTo: 'notifications' }
           this.screen = 'dashboard-reader'
@@ -1690,19 +1724,20 @@ export class EvenT3App {
           await this.openProjects('sessions')
           return
         }
-        const threadId = selectedValue(this.sessionRows, this.sessionSelection)
-        if (threadId) {
+        const identity = selectedValue(this.sessionRows, this.sessionSelection)
+        const session = identity ? this.sessionForIdentity(identity) : undefined
+        if (session) {
           this.assistantOrigin = null
           this.transcriptReturn = 'sessions'
-          await this.openTranscript(threadId)
+          await this.openTranscript(session.id, true, false, session.environmentId)
         }
         return
       }
       case 'projects': {
-        const projectId = selectedValue(this.projectRows, this.projectSelection)
-        if (projectId) {
+        const projectKey = selectedValue(this.projectRows, this.projectSelection)
+        if (projectKey) {
           this.transcriptReturn = 'projects'
-          await this.openModels(projectId)
+          await this.openModels(projectKey)
         }
         return
       }
@@ -1730,6 +1765,7 @@ export class EvenT3App {
         if (this.selectedProject) {
           await this.beginDictation({
             kind: 'project',
+            ...environmentParameter(this.selectedProject),
             projectId: this.selectedProject.id,
             modelSelection: this.newSessionModelSelection(),
           }, 'new-session')
@@ -1737,7 +1773,8 @@ export class EvenT3App {
         return
       case 'transcript':
         if (this.transcript) {
-          await this.beginDictation({ kind: 'thread', threadId: this.transcript.session.id }, 'transcript')
+          await this.beginDictation({ kind: 'thread', ...environmentParameter(this.transcript.session),
+            threadId: this.transcript.session.id }, 'transcript')
         }
         return
       case 'dictating':
@@ -2073,12 +2110,13 @@ export class EvenT3App {
       || !['transcript', 'plan', 'dictating', 'draft'].includes(this.screen)
       || !this.transcript
     ) return
-    const threadId = transcriptChangedThreadId(payload)
-    if (threadId !== this.transcript.session.id) return
-    this.scheduleTranscriptRefresh(threadId)
+    const changed = transcriptChangedSession(payload)
+    if (!changed || sessionIdentity({ id: changed.threadId, environmentId: changed.environmentId }) !==
+        sessionIdentity(this.transcript.session)) return
+    this.scheduleTranscriptRefresh(changed.threadId, changed.environmentId)
   }
 
-  private scheduleTranscriptRefresh(threadId: string): void {
+  private scheduleTranscriptRefresh(threadId: string, environmentId?: string): void {
     this.transcriptRefreshDirty = true
     if (this.transcriptRefreshQueued) return
     this.transcriptRefreshQueued = true
@@ -2091,13 +2129,14 @@ export class EvenT3App {
           if (
             generation !== this.transcriptRefreshGeneration
             || !['transcript', 'plan', 'dictating', 'draft'].includes(this.screen)
-            || this.transcript?.session.id !== threadId
+            || !this.transcript
+            || sessionIdentity(this.transcript.session) !== sessionIdentity({ id: threadId, environmentId })
           ) return
-          await this.openTranscript(threadId, false, this.screen !== 'transcript')
+          await this.openTranscript(threadId, false, this.screen !== 'transcript', environmentId)
         } finally {
           if (generation === this.transcriptRefreshGeneration) {
             this.transcriptRefreshQueued = false
-            if (this.transcriptRefreshDirty) this.scheduleTranscriptRefresh(threadId)
+            if (this.transcriptRefreshDirty) this.scheduleTranscriptRefresh(threadId, environmentId)
           }
         }
       })
@@ -2245,6 +2284,25 @@ export class EvenT3App {
   private requireClient(): T3BridgeClient {
     if (!this.client) throw new Error('T3 bridge is not connected')
     return this.client
+  }
+
+  private allKnownSessions(): SessionSummary[] {
+    const source = this.latestSessions ?? this.sessions
+    return source ? [...source.unsettled, ...source.settled] : []
+  }
+
+  private sessionForIdentity(identity: string): SessionSummary | undefined {
+    return this.allKnownSessions().find(session => sessionIdentity(session) === identity)
+      ?? (this.transcript && sessionIdentity(this.transcript.session) === identity ? this.transcript.session : undefined)
+  }
+
+  private projectForIdentity(identity: string): ProjectSummary | undefined {
+    return this.projects.find(project => projectIdentity(project) === identity)
+  }
+
+  private sameSession(left: Pick<SessionSummary, 'id' | 'environmentId'>,
+    right: Pick<SessionSummary, 'id' | 'environmentId'>): boolean {
+    return sessionIdentity(left) === sessionIdentity(right)
   }
 
   private async failDictationStream(

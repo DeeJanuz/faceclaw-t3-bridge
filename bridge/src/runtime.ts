@@ -2,6 +2,8 @@ import type { Server } from 'node:http';
 import { ApiError } from './security.js';
 import { createBridgeServer } from './server.js';
 import { HttpT3Client } from './t3-client.js';
+import { ManagedEnvironmentRouter } from './environment-router.js';
+import { T3ConnectManager } from './t3-connect.js';
 import { WhisperCppTranscriber } from './voice.js';
 import type { BridgeConfig, T3Client, T3Descriptor, Transcriber } from './types.js';
 
@@ -73,6 +75,8 @@ export interface BridgeRuntime {
   server: Server;
   useT3Token(token: string): Promise<T3Descriptor>;
   clearT3(): void;
+  syncT3Connect(baseDirectory: string): Promise<number>;
+  clearT3Connect(): void;
   useWhisper(url: URL | null): void;
 }
 
@@ -83,16 +87,36 @@ export function startBridgeRuntime(config: BridgeConfig): BridgeRuntime {
     ...(config.additionalRedactionSecrets?.() ?? []), ...tokens,
   ] };
   const client = new RecoveringT3Client(runtimeConfig);
+  const environments = new ManagedEnvironmentRouter();
+  const connectManagers = new Map<string, T3ConnectManager>();
   const transcriber = new RecoveringTranscriber();
-  const server = createBridgeServer(runtimeConfig, client, transcriber);
+  const server = createBridgeServer(runtimeConfig, environments, transcriber);
   server.listen(config.port, config.host, () => process.stdout.write(`${JSON.stringify({
     level: 'info', message: 'Even bridge listening', host: config.host, port: config.port,
     at: new Date().toISOString(),
   })}\n`));
   return {
     server,
-    useT3Token: token => { tokens.add(token); return client.useToken(token); },
-    clearT3: () => client.clear(),
+    useT3Token: async token => {
+      tokens.add(token);
+      const descriptor = await client.useToken(token);
+      environments.register({ descriptor, kind: 'local', client, primary: true });
+      return descriptor;
+    },
+    clearT3: () => { client.clear(); environments.removePrimary(); },
+    syncT3Connect: async baseDirectory => {
+      let manager = connectManagers.get(baseDirectory);
+      if (!manager) { manager = new T3ConnectManager(runtimeConfig, baseDirectory); connectManagers.set(baseDirectory, manager); }
+      try {
+        const discovered = await manager.discover();
+        environments.replaceKind('t3-connect', discovered);
+        return discovered.filter(item => item.client !== null).length;
+      } catch (error) {
+        environments.markKindUnavailable('t3-connect');
+        throw error;
+      }
+    },
+    clearT3Connect: () => environments.markKindUnavailable('t3-connect'),
     useWhisper: url => {
       if (url !== null && (url.protocol !== 'http:' || !['127.0.0.1', '[::1]'].includes(url.hostname) ||
         url.username || url.password || url.search || url.hash || !url.pathname.endsWith('/inference'))) {

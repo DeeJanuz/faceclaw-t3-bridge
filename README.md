@@ -9,7 +9,7 @@ This work builds on the original Faceclaw and our earlier T3 bridge work. It is 
 ## How it fits together
 
 - **Faceclaw fork:** The phone and glasses experience, including assistant conversations, dictation, and device tools.
-- **Computer bridge:** Connects Faceclaw to your existing T3 Code server and local Whisper transcription. T3 credentials remain on the computer; Faceclaw uses its own scoped pairing token.
+- **Computer bridge:** Connects Faceclaw to the local T3 Code server and every environment linked to the same T3 Connect account, plus local Whisper transcription. T3 credentials remain on the computer; Faceclaw uses its own scoped pairing token.
 - **T3 Code:** Owns projects, conversations, models, and agent execution. T3 Code and a working agent/provider must already be installed for real assistant use.
 
 Keep the bridge on loopback. For a physical phone, use private HTTPS/WSS through Tailscale Serve with normal certificate validation. Keep T3 Code running and the computer awake while using the assistant.

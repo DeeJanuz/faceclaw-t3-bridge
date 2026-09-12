@@ -8,6 +8,7 @@ import type {
   SessionsListResult,
   TranscriptTurn,
 } from './protocol'
+import { projectIdentity, sessionIdentity } from './protocol'
 
 export interface MenuRow {
   key: string
@@ -19,17 +20,18 @@ export interface MenuRow {
 const sessionRunning = (session: SessionSummary) => ['running', 'starting'].includes(session.status)
 
 /** Prefixes describe projects; navigation always uses the full project/thread ID. */
-export function projectAbbreviations(projects: readonly Pick<ProjectSummary, 'id' | 'title'>[]): Map<string, string> {
+export function projectAbbreviations(projects: readonly Pick<ProjectSummary, 'id' | 'title' | 'environmentId'>[]): Map<string, string> {
   const result = new Map<string, string>()
   const singles = new Map<string, Array<{ id: string; title: string }>>()
   const initial = (word: string) => Array.from(word.toUpperCase())[0] ?? '?'
-  for (const project of new Map(projects.map(project => [project.id, project])).values()) {
+  for (const project of new Map(projects.map(project => [projectIdentity(project), project])).values()) {
+    const identity = projectIdentity(project)
     const words = project.title.trim().split(/[\p{Dash_Punctuation}_\s]+/u).filter(Boolean)
-    if (words.length > 1) result.set(project.id, initial(words[0]!) + initial(words[1]!))
+    if (words.length > 1) result.set(identity, initial(words[0]!) + initial(words[1]!))
     else {
       const first = initial(words[0] ?? '')
       const group = singles.get(first) ?? []
-      group.push(project)
+      group.push({ ...project, id: identity })
       singles.set(first, group)
     }
   }
@@ -47,9 +49,9 @@ export function projectAbbreviations(projects: readonly Pick<ProjectSummary, 'id
 
 /** Working sessions lead Unsettled; each section otherwise follows recency. */
 export function buildSessionRows(result: SessionsListResult, now = Date.now(), projects: readonly ProjectSummary[] = []): MenuRow[] {
-  const sessions = sortSessionsByLastActivity([...new Map([...result.settled, ...result.unsettled].map(session => [session.id, session])).values()])
+  const sessions = sortSessionsByLastActivity([...new Map([...result.settled, ...result.unsettled].map(session => [sessionIdentity(session), session])).values()])
   const abbreviations = projectAbbreviations([
-    ...sessions.map(session => ({ id: session.projectId, title: session.projectTitle })), ...projects,
+    ...sessions.map(session => ({ id: session.projectId, title: session.projectTitle, environmentId: session.environmentId })), ...projects,
   ])
   const groups: Array<[string, SessionSummary[]]> = [
     ['UNSETTLED', sessions.filter(session => sessionRunning(session) || !session.settled)],
@@ -57,7 +59,7 @@ export function buildSessionRows(result: SessionsListResult, now = Date.now(), p
   ]
   const rows = groups.flatMap(([label, sessions]) => sessions.length ? [
     { key: `section:${label}`, text: label, selectable: false },
-    ...sessions.map(session => sessionRow(session, now, abbreviations.get(session.projectId) ?? '??')),
+    ...sessions.map(session => sessionRow(session, now, abbreviations.get(projectIdentity({ id: session.projectId, environmentId: session.environmentId })) ?? '??')),
   ] : [])
   return [
     { key: 'new', text: 'START NEW SESSION', selectable: true },
@@ -142,10 +144,10 @@ export function buildProjectRows(projects: readonly ProjectSummary[]): MenuRow[]
     return [{ key: 'projects-empty', text: 'NO PROJECTS AVAILABLE', selectable: false }]
   }
   return available.map((project) => ({
-    key: `project:${project.id}`,
-    text: truncate(project.title, 38),
+    key: `project:${projectIdentity(project)}`,
+    text: truncate(project.environmentLabel ? `${project.title} · ${project.environmentLabel}` : project.title, 38),
     selectable: true,
-    value: project.id,
+    value: projectIdentity(project),
   }))
 }
 
@@ -606,10 +608,10 @@ function sessionRow(session: SessionSummary, now: number, abbreviation: string):
     ? 'WORKING'
     : formatRelativeTime(session.lastActivityAt, now)
   return {
-    key: `session:${session.id}`,
-    text: `${abbreviation} - ${truncate(session.title, 24).padEnd(24)} ${status}`,
+    key: `session:${sessionIdentity(session)}`,
+    text: `${abbreviation} - ${truncate(session.title, session.environmentLabel ? 18 : 24).padEnd(session.environmentLabel ? 18 : 24)}${session.environmentLabel ? ` · ${truncate(session.environmentLabel, 5)}` : ''} ${status}`,
     selectable: true,
-    value: session.id,
+    value: sessionIdentity(session),
   }
 }
 

@@ -3,6 +3,7 @@ import { normalizePendingProposedPlan } from "./session-controls.js";
 import { ApiError, isSafeId } from "./security.js";
 import { normalizePendingPlanInput } from "./plan-input.js";
 import type {
+  BridgeEnvironment,
   BridgeConfig,
   T3Message,
   T3LiveActivity,
@@ -13,6 +14,11 @@ import type {
   T3ThreadShell,
   T3ThreadSnapshot,
 } from "./types.js";
+
+type EnvironmentIdentity = Pick<BridgeEnvironment, "environmentId" | "label">;
+const environmentFields = (environment?: EnvironmentIdentity) => environment
+  ? { environmentId: environment.environmentId, environmentLabel: environment.label }
+  : {};
 
 function validTime(value: string | null | undefined): number | null {
   if (!value) return null;
@@ -84,7 +90,7 @@ export function findThread(
   return thread;
 }
 
-export function normalizeProjects(snapshot: T3ShellSnapshot, config: BridgeConfig) {
+export function normalizeProjects(snapshot: T3ShellSnapshot, config: BridgeConfig, environment?: EnvironmentIdentity) {
   const interactedAt = new Map<string, number>();
   for (const thread of snapshot.threads) {
     // User activity, not assistant completion or project metadata edits, determines recency.
@@ -95,6 +101,7 @@ export function normalizeProjects(snapshot: T3ShellSnapshot, config: BridgeConfi
   return snapshot.projects
     .filter((project) => project.deletedAt == null && projectAllowed(project.id, config))
     .map((project) => ({
+      ...environmentFields(environment),
       id: project.id,
       title: project.title,
       canStartSession: true,
@@ -117,8 +124,9 @@ export function completedTurn(thread: T3ThreadShell): { id: string; completedAt:
   return { id: turn.turnId, completedAt: iso };
 }
 
-function sessionSummary(thread: T3ThreadShell, projects: ReadonlyMap<string, T3Project>) {
+function sessionSummary(thread: T3ThreadShell, projects: ReadonlyMap<string, T3Project>, environment?: EnvironmentIdentity) {
   return {
+    ...environmentFields(environment),
     id: thread.id,
     projectId: thread.projectId,
     projectTitle: projects.get(thread.projectId)?.title ?? "Unknown project",
@@ -131,7 +139,7 @@ function sessionSummary(thread: T3ThreadShell, projects: ReadonlyMap<string, T3P
   };
 }
 
-export function normalizeSessions(snapshot: T3ShellSnapshot, config: BridgeConfig) {
+export function normalizeSessions(snapshot: T3ShellSnapshot, config: BridgeConfig, environment?: EnvironmentIdentity) {
   const projects = new Map(
     snapshot.projects
       .filter((project) => project.deletedAt == null && projectAllowed(project.id, config))
@@ -143,11 +151,11 @@ export function normalizeSessions(snapshot: T3ShellSnapshot, config: BridgeConfi
   const unsettled = visible
     .filter((thread) => thread.settledOverride !== "settled")
     .sort(compareActivity)
-    .map((thread) => sessionSummary(thread, projects));
+    .map((thread) => sessionSummary(thread, projects, environment));
   const settled = visible
     .filter((thread) => thread.settledOverride === "settled")
     .sort(compareActivity)
-    .map((thread) => sessionSummary(thread, projects));
+    .map((thread) => sessionSummary(thread, projects, environment));
   return {
     snapshotId: String(snapshot.snapshotSequence),
     frozenAt: snapshot.updatedAt,
@@ -648,10 +656,12 @@ function normalizeSessionSettings(thread: T3ThreadShell): { interactionMode?: "d
       ...(typeof reasoning === "string" ? { reasoningId: reasoning } : {}) } };
 }
 
-export function normalizeTranscript(snapshot: T3ThreadSnapshot, projectTitle = "Unknown project") {
+export function normalizeTranscript(snapshot: T3ThreadSnapshot, projectTitle = "Unknown project", environment?: EnvironmentIdentity) {
   return {
+    ...environmentFields(environment),
     snapshotId: String(snapshot.snapshotSequence),
     session: {
+      ...environmentFields(environment),
       id: snapshot.thread.id,
       projectId: snapshot.thread.projectId,
       projectTitle,

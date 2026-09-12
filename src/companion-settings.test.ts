@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { mountSettings, type SettingsActions } from './companion-settings'
 import { defaultDashboardSettings, type DashboardSettings } from './dashboard-settings'
+import { projectIdentity } from './protocol'
 import { modelKey } from './view-model'
 
 class Element {
@@ -123,6 +124,23 @@ describe('assistant settings autosave', () => {
     ui.setSettings({ ...defaultDashboardSettings(), assistant }, [], [])
     expect(element('assistant-settings-status').textContent).toContain('Saved assistant is unavailable')
     expect(actions.save).not.toHaveBeenCalled()
+  })
+  it('restores and saves assistant choices within the selected environment', async () => {
+    const remoteProject = { ...project, environmentId: 'studio', environmentLabel: 'Studio Mac' }
+    const localModel = { ...model, environmentId: 'local' }
+    const remoteModel = { ...model, environmentId: 'studio' }
+    const remoteAssistant = { ...assistant, environmentId: 'studio' }
+    const { element, actions, ui } = setup()
+    ui.setSettings({ ...defaultDashboardSettings(), assistant: remoteAssistant },
+      [{ ...project, environmentId: 'local', environmentLabel: 'This computer' }, remoteProject],
+      [localModel, remoteModel])
+    expect(element('assistant-project').value).toBe(projectIdentity(remoteProject))
+    expect(element('assistant-model').children.filter((item: Element) => item.value === modelKey(model))).toHaveLength(1)
+    element('assistant-reasoning').change('low')
+    await vi.waitFor(() => expect(actions.save).toHaveBeenCalled())
+    expect(actions.save.mock.calls.at(-1)![0].assistant).toEqual({
+      ...remoteAssistant, modelSelection: { ...remoteAssistant.modelSelection, reasoningId: 'low' },
+    })
   })
   it('reports failure beside assistant controls and allows an explicit retry', async () => {
     const { element, actions, ui } = setup(async () => { throw new Error('Native readback failed') })

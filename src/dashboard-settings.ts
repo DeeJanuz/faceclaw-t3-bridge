@@ -1,4 +1,5 @@
 import { normalizeBridgeWebSocketUrl } from './connection-profile'
+import { projectIdentity } from './protocol'
 import type { ModelSummary, NewSessionModelSelection, ProjectSummary, WeatherLocation } from './protocol'
 
 export interface WeatherSettings {
@@ -7,6 +8,7 @@ export interface WeatherSettings {
   fallbackCity: WeatherLocation | null
 }
 export interface AssistantSettings {
+  environmentId?: string
   projectId: string
   modelSelection: NewSessionModelSelection
 }
@@ -48,9 +50,11 @@ function assistantSettings(value: unknown): AssistantSettings | null {
   const r = record(value)
   const model = record(r?.modelSelection)
   if (!r || !model || !text(r.projectId) || !/^[A-Za-z0-9._:-]+$/.test(r.projectId) ||
+      !(r.environmentId === undefined || (text(r.environmentId) && /^[A-Za-z0-9._:-]+$/.test(r.environmentId))) ||
       !text(model.instanceId) || !text(model.model, 256) ||
       !(model.reasoningId === undefined || text(model.reasoningId))) return null
-  return { projectId: r.projectId, modelSelection: { instanceId: model.instanceId, model: model.model,
+  return { ...(typeof r.environmentId === 'string' ? { environmentId: r.environmentId } : {}),
+    projectId: r.projectId, modelSelection: { instanceId: model.instanceId, model: model.model,
     ...(model.reasoningId === undefined ? {} : { reasoningId: model.reasoningId }) } }
 }
 export function parseDashboardSettings(value: unknown): DashboardSettings {
@@ -86,8 +90,10 @@ export function validateAssistantSelection(
   assistant: AssistantSettings | null, projects: readonly ProjectSummary[], models: readonly ModelSummary[],
 ): boolean {
   const safe = assistantSettings(assistant)
-  if (!safe || !projects.some(p => p.id === safe.projectId && p.canStartSession)) return false
+  if (!safe || !projects.some(p => projectIdentity(p) === projectIdentity({ id: safe.projectId,
+    environmentId: safe.environmentId }) && p.canStartSession)) return false
   const selected = safe.modelSelection
-  return models.some(model => model.instanceId === selected.instanceId && model.model === selected.model &&
+  return models.some(model => model.environmentId === safe.environmentId &&
+    model.instanceId === selected.instanceId && model.model === selected.model &&
     (selected.reasoningId === undefined || model.reasoningChoices.some(r => r.id === selected.reasoningId)))
 }

@@ -67,6 +67,16 @@ describe('plan draft storage boundary', () => {
     expect(await clearPlanDraft(f.storage, url, 'thread', request)).toBe(true)
     expect(await loadPlanDraft(f.wrapper(), url, 'thread', request)).toEqual({ answers: [], submitted: false })
   })
+  it('scopes drafts with the same thread and request ids to their environment', async () => {
+    const f = fixture()
+    const studioAnswers = [{ questionId: request.questions[0].id, optionIndexes: [], text: 'Studio answer' }]
+    await savePlanDraft(f.storage, url, 'thread', request, answers, false, 'local')
+    await savePlanDraft(f.storage, url, 'thread', request, studioAnswers, false, 'studio')
+    expect((await loadPlanDraft(f.wrapper(), url, 'thread', request, 'local')).answers).toEqual(answers)
+    expect((await loadPlanDraft(f.wrapper(), url, 'thread', request, 'studio')).answers).toEqual(studioAnswers)
+    await clearPlanDraft(f.storage, url, 'thread', request, 'local')
+    expect((await loadPlanDraft(f.wrapper(), url, 'thread', request, 'studio')).answers).toEqual(studioAnswers)
+  })
   it('retains memory on native failure without claiming durable success', async () => {
     for (const setLocalStorage of [async () => false, async () => true, async (): Promise<boolean> => { throw new Error('native failed') }]) {
       const storage = { getLocalStorage: async () => null, setLocalStorage }

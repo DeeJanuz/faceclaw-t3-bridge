@@ -20,6 +20,13 @@ describe('dashboard storage and event validation', () => {
       expect(parseSessionsSnapshot(value)).toBeNull()
     }
   })
+  it('allows the same thread id in different environments while rejecting a duplicate composite id', () => {
+    const studio = { ...session, environmentId: 'studio', environmentLabel: 'Studio Mac' }
+    const laptop = { ...session, environmentId: 'laptop', environmentLabel: 'Laptop' }
+    expect(parseSessionsSnapshot({ ...snapshot, unsettled: [studio, laptop] })?.unsettled)
+      .toEqual([studio, laptop])
+    expect(parseSessionsSnapshot({ ...snapshot, unsettled: [studio, studio] })).toBeNull()
+  })
   it('drops malformed alerts and noncanonical timestamps without persisting content', () => {
     const valid = { threadId: 'thread', turnId: 'turn', completedAt: date, text: 'private response' }
     const stored = { version: 1, initialized: true, watermark: date,

@@ -3,7 +3,7 @@ import type { DashboardStorage } from './dashboard-settings'
 import type { PendingPlanInput, PlanAnswer, PlanQuestion } from './protocol'
 
 export interface PlanDraft { answers: PlanAnswer[]; submitted: boolean }
-interface Entry extends PlanDraft { threadId: string; requestId: string; revision: string; updatedAt: number }
+interface Entry extends PlanDraft { environmentId?: string; threadId: string; requestId: string; revision: string; updatedAt: number }
 interface EndpointState { entries: Entry[]; loaded: boolean; writable: boolean; queue: Promise<unknown> }
 const states = new WeakMap<DashboardStorage, Map<string, EndpointState>>()
 const MAX_AGE = 7 * 24 * 60 * 60_000
@@ -98,7 +98,9 @@ function parseEntries(value: unknown): Entry[] {
         typeof r.updatedAt !== 'number' || !Number.isFinite(r.updatedAt) || r.updatedAt > now + 60_000 || now - r.updatedAt > MAX_AGE) continue
     const answers = parseAnswers(r.answers)
     if (!answers) continue
-    entries.push({ threadId: r.threadId, requestId: r.requestId, revision: r.revision, updatedAt: r.updatedAt, submitted: r.submitted, answers })
+    if (!(r.environmentId === undefined || (typeof r.environmentId === 'string' && ID.test(r.environmentId)))) continue
+    entries.push({ ...(typeof r.environmentId === 'string' ? { environmentId: r.environmentId } : {}),
+      threadId: r.threadId, requestId: r.requestId, revision: r.revision, updatedAt: r.updatedAt, submitted: r.submitted, answers })
   }
   return entries
 }
@@ -136,8 +138,8 @@ async function withState<T>(storage: DashboardStorage, endpoint: string, action:
   return task
 }
 
-function matches(entry: Entry, threadId: string, request: PendingPlanInput): boolean {
-  return entry.threadId === threadId && entry.requestId === request.requestId && entry.revision === request.revision
+function matches(entry: Entry, threadId: string, request: PendingPlanInput, environmentId?: string): boolean {
+  return entry.environmentId === environmentId && entry.threadId === threadId && entry.requestId === request.requestId && entry.revision === request.revision
 }
 async function persist(storage: DashboardStorage, key: string, state: EndpointState): Promise<boolean> {
   if (!state.writable) return false
@@ -158,39 +160,39 @@ async function persist(storage: DashboardStorage, key: string, state: EndpointSt
   }
 }
 
-export async function loadPlanDraft(storage: DashboardStorage, endpoint: string, threadId: string, request: PendingPlanInput): Promise<PlanDraft> {
+export async function loadPlanDraft(storage: DashboardStorage, endpoint: string, threadId: string, request: PendingPlanInput, environmentId?: string): Promise<PlanDraft> {
   try {
     if (!ID.test(threadId) || !parsePendingPlanInput(request)) return { answers: [], submitted: false }
     return await withState(storage, endpoint, async state => {
-      const entry = state.entries.find(e => matches(e, threadId, request))
+      const entry = state.entries.find(e => matches(e, threadId, request, environmentId))
       const answers = entry ? parseAnswers(entry.answers, request) : null
       return { answers: answers ?? [], submitted: entry?.submitted === true }
     })
   } catch { return { answers: [], submitted: false } }
 }
 
-export async function savePlanDraft(storage: DashboardStorage, endpoint: string, threadId: string, request: PendingPlanInput, answers: PlanAnswer[], submitted = false): Promise<boolean> {
+export async function savePlanDraft(storage: DashboardStorage, endpoint: string, threadId: string, request: PendingPlanInput, answers: PlanAnswer[], submitted = false, environmentId?: string): Promise<boolean> {
   try {
     const valid = parsePendingPlanInput(request)
     const parsed = valid ? parseAnswers(answers, valid) : null
     if (!ID.test(threadId) || !valid || !parsed || (submitted && parsed.length !== valid.questions.length)) return false
     return await withState(storage, endpoint, async (state, key) => {
-      const previous = state.entries.find(e => matches(e, threadId, valid))
+      const previous = state.entries.find(e => matches(e, threadId, valid, environmentId))
       // Once submitted, a queued autosave must never alter the batch or unlock it.
       const entry: Entry = previous?.submitted ? previous : {
-        threadId, requestId: valid.requestId, revision: valid.revision, updatedAt: Date.now(), answers: parsed, submitted,
+        ...(environmentId ? { environmentId } : {}), threadId, requestId: valid.requestId, revision: valid.revision, updatedAt: Date.now(), answers: parsed, submitted,
       }
-      state.entries = [...state.entries.filter(e => !(e.threadId === threadId && e.requestId === valid.requestId)), entry].slice(-16)
+      state.entries = [...state.entries.filter(e => !(e.environmentId === environmentId && e.threadId === threadId && e.requestId === valid.requestId)), entry].slice(-16)
       return persist(storage, key, state)
     })
   } catch { return false }
 }
 
-export async function clearPlanDraft(storage: DashboardStorage, endpoint: string, threadId: string, request: PendingPlanInput): Promise<boolean> {
+export async function clearPlanDraft(storage: DashboardStorage, endpoint: string, threadId: string, request: PendingPlanInput, environmentId?: string): Promise<boolean> {
   try {
     if (!ID.test(threadId) || !parsePendingPlanInput(request)) return false
     return await withState(storage, endpoint, async (state, key) => {
-      state.entries = state.entries.filter(e => !matches(e, threadId, request))
+      state.entries = state.entries.filter(e => !matches(e, threadId, request, environmentId))
       return persist(storage, key, state)
     })
   } catch { return false }

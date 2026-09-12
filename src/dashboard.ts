@@ -1,12 +1,13 @@
 import { getTextWidth } from '@evenrealities/pretext'
 import { normalizeBridgeWebSocketUrl } from './connection-profile'
 import { projectAbbreviations } from './view-model'
-import type { ProjectSummary, SessionSummary, SessionsListResult } from './protocol'
+import { projectIdentity, sessionIdentity } from './protocol'
+import type { EnvironmentSummary, ProjectSummary, SessionSummary, SessionsListResult } from './protocol'
 
 export const ASK_ASSISTANT_MENU_ID = 1
 export const SETTLE_SESSION_MENU_ID = 3
 export const MAX_ALERTS = 50
-export interface AlertReference { threadId: string; turnId: string; completedAt: string }
+export interface AlertReference { environmentId?: string; threadId: string; turnId: string; completedAt: string }
 export interface NotificationState {
   initialized: boolean
   watermark: string
@@ -28,33 +29,39 @@ export function emptyNotifications(): NotificationState {
 }
 
 export function notificationKey(alert: AlertReference): string {
-  return JSON.stringify([alert.threadId, alert.turnId])
+  return alert.environmentId
+    ? JSON.stringify([alert.environmentId, alert.threadId, alert.turnId])
+    : JSON.stringify([alert.threadId, alert.turnId])
 }
+
+const alertSessionKey = (alert: AlertReference) => alert.environmentId
+  ? JSON.stringify([alert.environmentId, alert.threadId]) : alert.threadId
 
 export function reconcileNotifications(state: NotificationState, snapshot: SessionsListResult): NotificationState {
   const sessions = [...snapshot.unsettled, ...snapshot.settled]
-  const visible = new Set(sessions.map(session => session.id))
-  const awaiting = new Set(sessions.filter(session => !session.settled && !['running', 'starting'].includes(session.status)).map(session => session.id))
+  const visible = new Set(sessions.map(sessionIdentity))
+  const awaiting = new Set(sessions.filter(session => !session.settled && !['running', 'starting'].includes(session.status)).map(sessionIdentity))
   const completed = sessions.flatMap(session => session.completedTurn ? [{
+    ...(session.environmentId ? { environmentId: session.environmentId } : {}),
     threadId: session.id, turnId: session.completedTurn.id, completedAt: session.completedTurn.completedAt,
   }] : []).sort((a, b) => b.completedAt.localeCompare(a.completedAt))
-  const markers = new Map(state.markers.map(marker => [marker.threadId, marker]))
-  const unread = new Map(state.unread.filter(alert => awaiting.has(alert.threadId)).map(alert => [notificationKey(alert), alert]))
+  const markers = new Map(state.markers.map(marker => [alertSessionKey(marker), marker]))
+  const unread = new Map(state.unread.filter(alert => awaiting.has(alertSessionKey(alert))).map(alert => [notificationKey(alert), alert]))
   if (state.initialized) {
     for (const alert of completed) {
-      const previous = markers.get(alert.threadId)
+      const previous = markers.get(alertSessionKey(alert))
       if (previous ? previous.turnId !== alert.turnId && alert.completedAt >= previous.completedAt : alert.completedAt > state.watermark) {
-        if (awaiting.has(alert.threadId)) unread.set(notificationKey(alert), alert)
+        if (awaiting.has(alertSessionKey(alert))) unread.set(notificationKey(alert), alert)
       }
     }
   }
   const watermark = [state.watermark, snapshot.frozenAt, ...completed.map(alert => alert.completedAt)].sort().at(-1) ?? ''
   // Keep markers for running threads too, so their prior completion remains known.
-  for (const alert of completed) markers.set(alert.threadId, alert)
+  for (const alert of completed) markers.set(alertSessionKey(alert), alert)
   return {
     initialized: true,
     watermark,
-    markers: [...markers.values()].filter(marker => visible.has(marker.threadId))
+    markers: [...markers.values()].filter(marker => visible.has(alertSessionKey(marker)))
       .sort((a, b) => b.completedAt.localeCompare(a.completedAt)).slice(0, MAX_ALERTS),
     unread: [...unread.values()].sort((a, b) => b.completedAt.localeCompare(a.completedAt)).slice(0, MAX_ALERTS),
   }
@@ -64,24 +71,28 @@ export function markAlertRead(state: NotificationState, alert: AlertReference): 
   return { ...state, unread: state.unread.filter(item => notificationKey(item) !== notificationKey(alert)) }
 }
 
-export function markSessionRead(state: NotificationState, session: Pick<SessionSummary, 'id' | 'completedTurn'>): NotificationState {
-  const markers = new Map(state.markers.map(marker => [marker.threadId, marker]))
-  const previous = markers.get(session.id)
-  const hasUnread = state.unread.some(alert => alert.threadId === session.id)
+export function markSessionRead(state: NotificationState, session: Pick<SessionSummary, 'id' | 'environmentId' | 'completedTurn'>): NotificationState {
+  const key = sessionIdentity(session)
+  const markers = new Map(state.markers.map(marker => [alertSessionKey(marker), marker]))
+  const previous = markers.get(key)
+  const hasUnread = state.unread.some(alert => alertSessionKey(alert) === key)
   const newMarker = session.completedTurn && (!previous || (session.completedTurn.completedAt >= previous.completedAt && session.completedTurn.id !== previous.turnId))
   if (!hasUnread && !newMarker) return state
   if (session.completedTurn && (!previous || session.completedTurn.completedAt >= previous.completedAt)) {
-    markers.set(session.id, { threadId: session.id, turnId: session.completedTurn.id, completedAt: session.completedTurn.completedAt })
+    markers.set(key, { ...(session.environmentId ? { environmentId: session.environmentId } : {}),
+      threadId: session.id, turnId: session.completedTurn.id, completedAt: session.completedTurn.completedAt })
   }
-  return { ...state, unread: state.unread.filter(alert => alert.threadId !== session.id),
+  return { ...state, unread: state.unread.filter(alert => alertSessionKey(alert) !== key),
     markers: [...markers.values()].sort((a, b) => b.completedAt.localeCompare(a.completedAt)).slice(0, MAX_ALERTS) }
 }
 
 export function notificationCards(state: NotificationState, sessions: readonly SessionSummary[], projects: readonly ProjectSummary[] = []): DashboardCard[] {
-  const abbreviations = projectAbbreviations([...sessions.map(session => ({ id: session.projectId, title: session.projectTitle })), ...projects])
+  const abbreviations = projectAbbreviations([...sessions.map(session => ({ id: session.projectId, title: session.projectTitle,
+    environmentId: session.environmentId })), ...projects])
   return state.unread.map(alert => {
-    const session = sessions.find(item => item.id === alert.threadId)
-    const label = fitLines(`${abbreviations.get(session?.projectId ?? '') ?? '??'} - ${session?.title ?? 'T3 session'}`, 252, 1)
+    const session = sessions.find(item => sessionIdentity(item) === alertSessionKey(alert))
+    const projectKey = session ? projectIdentity({ id: session.projectId, environmentId: session.environmentId }) : ''
+    const label = fitLines(`${abbreviations.get(projectKey) ?? '??'} - ${session?.title ?? 'T3 session'}`, 252, 1)
     return {
       key: notificationKey(alert), title: 'Awaiting input', action: { kind: 'alert' as const, alert },
       notification: { label, completedAt: alert.completedAt }, body: `Awaiting input\n${label}`,
@@ -130,6 +141,7 @@ export function parseNotifications(raw: string | null): NotificationState {
     if (value?.version !== 1 || value.initialized !== true || !validDate(value.watermark)) return emptyNotifications()
     const parse = (items: unknown): AlertReference[] => Array.isArray(items)
       ? [...new Map(items.slice(0, MAX_ALERTS).filter(validAlert).map(item => [notificationKey(item), {
+        ...(item.environmentId ? { environmentId: item.environmentId } : {}),
         threadId: item.threadId, turnId: item.turnId, completedAt: item.completedAt,
       }])).values()] : []
     return { initialized: true, watermark: value.watermark, markers: parse(value.markers), unread: parse(value.unread) }
@@ -147,6 +159,7 @@ function validAlert(value: unknown): value is AlertReference {
   if (typeof value !== 'object' || value === null || Array.isArray(value)) return false
   const item = value as Record<string, unknown>
   return [item.threadId, item.turnId].every(validId)
+    && (item.environmentId === undefined || validId(item.environmentId))
     && validDate(item.completedAt)
 }
 
@@ -167,12 +180,16 @@ export function parseSessionsSnapshot(value: unknown): SessionsListResult | null
     for (const item of items) {
       if (!item || typeof item !== 'object' || Array.isArray(item)) return null
       const s = item as Record<string, unknown>
-      if (!validId(s.id) || ids.has(s.id) || !validId(s.projectId) ||
+      if (!validId(s.id) || !validId(s.projectId) ||
+          !(s.environmentId === undefined || validId(s.environmentId)) ||
+          !(s.environmentLabel === undefined || (typeof s.environmentLabel === 'string' && s.environmentLabel.length <= 256)) ||
           typeof s.title !== 'string' || s.title.length > 10_000 ||
           typeof s.projectTitle !== 'string' || s.projectTitle.length > 10_000 ||
           typeof s.status !== 'string' || s.status.length > 100 ||
           typeof s.settled !== 'boolean' || typeof s.lastActivityAt !== 'string' || s.lastActivityAt.length > 40) return null
-      ids.add(s.id)
+      const identity = JSON.stringify([s.environmentId ?? '', s.id])
+      if (ids.has(identity)) return null
+      ids.add(identity)
       let completedTurn: SessionSummary['completedTurn'] = null
       if (s.completedTurn !== undefined && s.completedTurn !== null) {
         if (typeof s.completedTurn !== 'object' || Array.isArray(s.completedTurn)) return null
@@ -180,11 +197,33 @@ export function parseSessionsSnapshot(value: unknown): SessionsListResult | null
         if (!validId(turn.id) || !validDate(turn.completedAt)) return null
         completedTurn = { id: turn.id, completedAt: turn.completedAt }
       }
-      result.push({ id: s.id, projectId: s.projectId, title: s.title, projectTitle: s.projectTitle,
+      result.push({ ...(typeof s.environmentId === 'string' ? { environmentId: s.environmentId } : {}),
+        ...(typeof s.environmentLabel === 'string' ? { environmentLabel: s.environmentLabel } : {}),
+        id: s.id, projectId: s.projectId, title: s.title, projectTitle: s.projectTitle,
         status: s.status, settled: s.settled, lastActivityAt: s.lastActivityAt, completedTurn })
     }
     return result
   }
   const unsettled = parse(data.unsettled), settled = parse(data.settled)
-  return unsettled && settled ? { snapshotId: data.snapshotId, frozenAt: data.frozenAt, unsettled, settled } : null
+  let environments: EnvironmentSummary[] | undefined
+  if (data.environments !== undefined) {
+    if (!Array.isArray(data.environments) || data.environments.length > 128) return null
+    environments = []
+    const environmentIds = new Set<string>()
+    for (const raw of data.environments) {
+      if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null
+      const item = raw as Record<string, unknown>
+      if (!validId(item.environmentId) || environmentIds.has(item.environmentId) ||
+          typeof item.label !== 'string' || item.label.length === 0 || item.label.length > 256 ||
+          !['local', 't3-connect', 'bearer', 'ssh', 'wsl'].includes(String(item.kind)) ||
+          !['connected', 'connecting', 'offline', 'error'].includes(String(item.status)) ||
+          typeof item.isPrimary !== 'boolean') return null
+      environmentIds.add(item.environmentId)
+      environments.push({ environmentId: item.environmentId, label: item.label,
+        kind: item.kind as EnvironmentSummary['kind'], status: item.status as EnvironmentSummary['status'],
+        isPrimary: item.isPrimary })
+    }
+  }
+  return unsettled && settled ? { snapshotId: data.snapshotId, frozenAt: data.frozenAt, unsettled, settled,
+    ...(environments ? { environments } : {}), ...(typeof data.partial === 'boolean' ? { partial: data.partial } : {}) } : null
 }

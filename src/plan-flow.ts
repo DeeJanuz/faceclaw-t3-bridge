@@ -22,7 +22,7 @@ export class PlanFlow {
   entrance: 'bottom' | 'right' = 'bottom'
   notice = ''
 
-  constructor(readonly threadId: string, readonly request: PendingPlanInput, answers: PlanAnswer[] = []) {
+  constructor(readonly threadId: string, readonly request: PendingPlanInput, answers: PlanAnswer[] = [], readonly environmentId?: string) {
     this.answers = answers.map(answer => ({ ...answer, optionIndexes: [...answer.optionIndexes] }))
     this.questionIndex = Math.max(0, request.questions.findIndex(question => !this.answer(question)))
   }

@@ -1,6 +1,6 @@
 import { debugToolsEnabled } from './debug-tools'
 import { defaultDashboardSettings, parseDashboardSettings, validateAssistantSelection, type DashboardSettings } from './dashboard-settings'
-import type { ModelSummary, ProjectSummary, WeatherLocation } from './protocol'
+import { projectIdentity, type ModelSummary, type ProjectSummary, type WeatherLocation } from './protocol'
 import { modelKey } from './view-model'
 
 export interface SettingsActions {
@@ -76,8 +76,17 @@ export function mountSettings(actions?: SettingsActions) {
     node.textContent = label
     select.append(node)
   }
+  function selectedProject(): ProjectSummary | undefined {
+    return projects.find(item => projectIdentity(item) === project.value)
+  }
+  function availableModels(): ModelSummary[] {
+    const selected = selectedProject()
+    if (project.value && !selected) return []
+    const environmentId = selected?.environmentId
+    return models.filter(item => item.environmentId === environmentId)
+  }
   function reasoningChoices(selected?: string) {
-    const choice = models.find(item => modelKey(item) === model.value)
+    const choice = availableModels().find(item => modelKey(item) === model.value)
     reasoning.replaceChildren()
     option(reasoning, '', 'Provider default')
     choice?.reasoningChoices.forEach(item => option(reasoning, item.id, item.label))
@@ -88,6 +97,17 @@ export function mountSettings(actions?: SettingsActions) {
     }
     reasoning.disabled = !choice?.reasoningChoices.length
   }
+  function modelChoices(selected?: string, unavailable = false) {
+    model.replaceChildren()
+    option(model, '', 'Choose a model')
+    availableModels().forEach(item => option(model, modelKey(item), `${item.providerName} · ${item.name}`))
+    model.value = selected ?? ''
+    if (model.selectedIndex < 0 && selected) {
+      option(model, selected, unavailable ? 'Saved model unavailable' : 'Model unavailable')
+      model.value = selected
+    }
+    reasoningChoices()
+  }
   function cityChoices(selected?: string) {
     city.replaceChildren()
     option(city, '', 'No fallback city')
@@ -96,9 +116,11 @@ export function mountSettings(actions?: SettingsActions) {
   }
   function selectedAssistant(): DashboardSettings['assistant'] | undefined {
     if (!project.value) return null
-    const choice = models.find(item => modelKey(item) === model.value)
-    if (!choice) return undefined
-    const assistant = { projectId: project.value, modelSelection: {
+    const selected = selectedProject()
+    const choice = availableModels().find(item => modelKey(item) === model.value)
+    if (!selected || !choice) return undefined
+    const assistant = { ...(selected.environmentId ? { environmentId: selected.environmentId } : {}),
+      projectId: selected.id, modelSelection: {
       instanceId: choice.instanceId, model: choice.model, ...(reasoning.value ? { reasoningId: reasoning.value } : {}),
     } }
     return validateAssistantSelection(assistant, projects, models) ? assistant : undefined
@@ -155,7 +177,7 @@ export function mountSettings(actions?: SettingsActions) {
     }
     queueSave({ assistant, weather: savedSettings.weather }, false)
   }
-  project.addEventListener('change', autosaveAssistant)
+  project.addEventListener('change', () => { modelChoices(); autosaveAssistant() })
   model.addEventListener('change', () => { reasoningChoices(); autosaveAssistant() })
   reasoning.addEventListener('change', autosaveAssistant)
   element<HTMLButtonElement>('settings-reload').onclick = () => {
@@ -239,21 +261,17 @@ export function mountSettings(actions?: SettingsActions) {
       element<HTMLButtonElement>('settings-reload').disabled = saving !== null
       project.replaceChildren()
       option(project, '', 'Not configured')
-      projects.filter(item => item.canStartSession).forEach(item => option(project, item.id, item.title))
-      project.value = settings.assistant?.projectId ?? ''
+      projects.filter(item => item.canStartSession).forEach(item => option(project, projectIdentity(item),
+        item.environmentLabel ? `${item.title} · ${item.environmentLabel}` : item.title))
+      const savedProject = settings.assistant
+        ? projectIdentity({ id: settings.assistant.projectId, environmentId: settings.assistant.environmentId }) : ''
+      project.value = savedProject
       if (project.selectedIndex < 0 && settings.assistant) {
-        option(project, settings.assistant.projectId, 'Saved project unavailable')
-        project.value = settings.assistant.projectId
+        option(project, savedProject, 'Saved project unavailable')
+        project.value = savedProject
       }
       models = choices
-      model.replaceChildren()
-      option(model, '', 'Choose a model')
-      models.forEach(item => option(model, modelKey(item), `${item.providerName} · ${item.name}`))
-      model.value = settings.assistant ? modelKey(settings.assistant.modelSelection) : ''
-      if (model.selectedIndex < 0 && settings.assistant) {
-        option(model, modelKey(settings.assistant.modelSelection), 'Saved model unavailable')
-        model.value = modelKey(settings.assistant.modelSelection)
-      }
+      modelChoices(settings.assistant ? modelKey(settings.assistant.modelSelection) : '', Boolean(settings.assistant))
       reasoningChoices(settings.assistant?.modelSelection.reasoningId)
       enabled.checked = settings.weather.enabled
       unit.value = settings.weather.unit

@@ -279,7 +279,8 @@ export async function main() {
   const { startBridgeRuntime } = await import("../dist/src/runtime.js");
   const config = loadConfig();
   const baseUrl = new URL(loopbackT3Url(config.t3BaseUrl.href));
-  const baseDir = path.resolve(process.env.T3_BASE_DIR || path.join(homedir(), ".t3"));
+  const requestedBaseDir = path.resolve(process.env.T3_BASE_DIR || path.join(homedir(), ".t3"));
+  const baseDir = await realpath(requestedBaseDir).catch(() => requestedBaseDir);
   // Bind the phone/dashboard server before looking for either optional provider.
   // Secrets remain in this process and are never put in a child bridge environment.
   const runtime = startBridgeRuntime(config);
@@ -305,24 +306,32 @@ export async function main() {
     );
   };
   async function refreshT3() {
-    try {
+    const localAttempt = (async () => {
       if (session === null) {
         const cli = await findApp();
         const minted = await mintScopedToken(cli, baseDir, baseUrl);
         session = { ...minted, cli };
       }
-      if (stopping) return;
+      if (stopping) return false;
       await runtime.useT3Token(session.accessToken);
-      if (!stopping) status("T3", true);
-    } catch (error) {
+      return true;
+    })();
+    // Account-linked environments do not depend on the local T3 server or
+    // temporary local session, so discover both sources independently.
+    const connectAttempt = runtime.syncT3Connect(baseDir).then(count => count > 0);
+    const [local, connect] = await Promise.allSettled([localAttempt, connectAttempt]);
+    if (local.status === "rejected") {
       runtime.clearT3();
-      if (error?.code === "upstream_auth_failed" && session !== null) {
+      if (local.reason?.code === "upstream_auth_failed" && session !== null) {
         const expired = session; session = null;
         await revoke(expired);
       }
-      if (!stopping) status("T3", false);
-    } finally {
-      if (!stopping) t3Timer = setTimeout(() => { t3Work = refreshT3(); }, 10_000);
+    }
+    if (connect.status === "rejected") runtime.clearT3Connect();
+    if (!stopping) {
+      status("T3", (local.status === "fulfilled" && local.value) ||
+        (connect.status === "fulfilled" && connect.value));
+      t3Timer = setTimeout(() => { t3Work = refreshT3(); }, 10_000);
     }
   }
   function retryWhisper() {
@@ -358,11 +367,11 @@ export async function main() {
       if (stopping) return;
       stopping = true;
       clearTimeout(t3Timer); clearTimeout(whisperTimer);
-      runtime.clearT3(); runtime.useWhisper(null);
+      runtime.clearT3(); runtime.clearT3Connect(); runtime.useWhisper(null);
       runtime.server.close();
       // In-flight mint owns a session too; wait before revocation, even on shutdown.
       await Promise.allSettled([t3Work, whisperWork]);
-      runtime.clearT3();
+      runtime.clearT3(); runtime.clearT3Connect();
       await Promise.allSettled([revoke(session), stopManagedWhisper(whisperChild)]);
       resolve();
     };

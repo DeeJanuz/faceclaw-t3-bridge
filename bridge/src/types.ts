@@ -194,6 +194,39 @@ export interface T3Descriptor {
   readonly capabilities: Record<string, unknown>;
 }
 
+export type T3EnvironmentKind = "local" | "t3-connect" | "bearer" | "ssh" | "wsl";
+export type T3EnvironmentStatus = "connected" | "connecting" | "offline" | "error";
+
+/** Public, secret-free environment state exposed by the bridge. */
+export interface BridgeEnvironment {
+  readonly environmentId: string;
+  readonly label: string;
+  readonly kind: T3EnvironmentKind;
+  readonly status: T3EnvironmentStatus;
+  readonly isPrimary: boolean;
+  readonly serverVersion?: string;
+  readonly errorCode?: string;
+}
+
+export interface ResolvedT3Environment {
+  readonly environment: BridgeEnvironment;
+  readonly client: T3Client;
+}
+
+export interface T3EnvironmentSnapshot extends ResolvedT3Environment {
+  readonly shell: T3ShellSnapshot;
+}
+
+export interface T3EnvironmentRouter {
+  list(): Promise<readonly BridgeEnvironment[]>;
+  resolve(environmentId?: string): Promise<ResolvedT3Environment>;
+  primary(): Promise<ResolvedT3Environment>;
+  snapshots(): Promise<{
+    readonly available: readonly T3EnvironmentSnapshot[];
+    readonly environments: readonly BridgeEnvironment[];
+  }>;
+}
+
 export interface T3Client {
   setModel?(input: { readonly thread: T3ThreadShell; readonly selection: T3NewSessionSelection }): Promise<{ readonly sequence: number }>;
   setReasoning?(input: { readonly thread: T3ThreadShell; readonly reasoningId: string }): Promise<{ readonly sequence: number }>;

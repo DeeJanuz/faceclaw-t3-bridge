@@ -19,6 +19,23 @@ import type {
   T3ThreadSnapshot,
 } from "./types.js";
 
+export interface T3RequestAuthorization {
+  requestUrl?(url: URL): Promise<URL>;
+  headers(method: string, url: URL): Promise<Readonly<Record<string, string>>>;
+  websocket(): Promise<{ readonly url: URL; readonly headers?: Readonly<Record<string, string>> }>;
+  invalidate?(): void;
+}
+
+class BearerT3Authorization implements T3RequestAuthorization {
+  constructor(private readonly baseUrl: URL, private readonly token: string) {}
+  async headers() { return { Authorization: `Bearer ${this.token}` }; }
+  async websocket() {
+    const url = new URL("/ws", this.baseUrl);
+    url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
+    return { url, headers: { Authorization: `Bearer ${this.token}` } };
+  }
+}
+
 class UpstreamError extends Error {}
 
 async function readLimitedJson(response: Response, maximumBytes: number): Promise<unknown> {
@@ -243,20 +260,24 @@ function websocketDataText(data: RawData): string {
 export class HttpT3Client implements T3Client {
   private modelCatalogCache: { value: ParsedModelCatalog; expiresAt: number } | null = null;
   private modelCatalogInFlight: Promise<ParsedModelCatalog> | null = null;
+  private readonly authorization: T3RequestAuthorization;
 
-  constructor(private readonly config: BridgeConfig) {
-    if (!config.t3AccessToken) throw new ApiError(503, "upstream_unavailable", "T3 Code is unavailable");
+  constructor(private readonly config: BridgeConfig, authorization?: T3RequestAuthorization) {
+    if (!authorization && !config.t3AccessToken) throw new ApiError(503, "upstream_unavailable", "T3 Code is unavailable");
+    this.authorization = authorization ?? new BearerT3Authorization(config.t3BaseUrl, config.t3AccessToken!);
   }
 
   private async request(path: string, init?: RequestInit): Promise<unknown> {
-    const url = new URL(path, this.config.t3BaseUrl);
+    let url = new URL(path, this.config.t3BaseUrl);
     let response: Response;
     try {
+      if (this.authorization.requestUrl) url = await this.authorization.requestUrl(url);
+      const authorization = await this.authorization.headers(init?.method ?? "GET", url);
       response = await fetch(url, {
         ...init,
         headers: {
           Accept: "application/json",
-          Authorization: `Bearer ${this.config.t3AccessToken}`,
+          ...authorization,
           ...(init?.body === undefined ? {} : { "Content-Type": "application/json" }),
           ...init?.headers,
         },
@@ -271,6 +292,7 @@ export class HttpT3Client implements T3Client {
     });
     if (!response.ok) {
       if (response.status === 401 || response.status === 403) {
+        this.authorization.invalidate?.();
         throw new ApiError(502, "upstream_auth_failed", "T3 Code authorization failed");
       }
       throw new ApiError(502, "upstream_operation_failed", "T3 Code rejected the operation");
@@ -336,15 +358,20 @@ export class HttpT3Client implements T3Client {
 
   private async fetchModelCatalog(): Promise<ParsedModelCatalog> {
     const requestId = randomUUID();
-    const url = new URL("/ws", this.config.t3BaseUrl);
-    url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
+    let connection: Awaited<ReturnType<T3RequestAuthorization["websocket"]>>;
+    try {
+      connection = await this.authorization.websocket();
+    } catch {
+      this.authorization.invalidate?.();
+      throw new ApiError(502, "upstream_auth_failed", "T3 Code authorization failed");
+    }
     const maximumBytes = this.config.maxUpstreamBytes;
     const timeoutMs = this.config.upstreamTimeoutMs;
 
     const value = await new Promise<unknown>((resolve, reject) => {
       let settled = false;
-      const socket = new WebSocket(url, {
-        headers: { Authorization: `Bearer ${this.config.t3AccessToken}` },
+      const socket = new WebSocket(connection.url, {
+        ...(connection.headers ? { headers: connection.headers } : {}),
         followRedirects: false,
         handshakeTimeout: timeoutMs,
         maxPayload: maximumBytes,
@@ -386,6 +413,7 @@ export class HttpT3Client implements T3Client {
       socket.once("unexpected-response", (_request, response) => {
         response.resume();
         const authFailure = response.statusCode === 401 || response.statusCode === 403;
+        if (authFailure) this.authorization.invalidate?.();
         finish({
           error: authFailure
             ? new ApiError(502, "upstream_auth_failed", "T3 Code authorization failed")

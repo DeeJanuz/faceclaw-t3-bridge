@@ -172,6 +172,15 @@ describe('project menu', () => {
 
     expect(buildProjectRows(projects).map((row) => row.value)).toEqual(['one'])
   })
+  it('keeps duplicate project ids selectable across environments', () => {
+    const projects: ProjectSummary[] = ['local', 'studio'].map(environmentId => ({
+      environmentId, environmentLabel: environmentId, id: 'shared', title: 'Project',
+      canStartSession: true, updatedAt: '2026-09-03T12:00:00.000Z',
+    }))
+    const rows = buildProjectRows(projects)
+    expect(new Set(rows.map(row => row.value)).size).toBe(2)
+    expect(rows.map(row => row.text)).toEqual(['Project · local', 'Project · studio'])
+  })
 })
 
 describe('new session model menus', () => {

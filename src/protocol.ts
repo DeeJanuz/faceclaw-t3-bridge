@@ -2,7 +2,19 @@ import type { PhoneSnapshot, PhoneCommandResult, PhonePairing } from './phone-pr
 export const PROTOCOL_VERSION = 1 as const
 export const BRIDGE_PROTOCOL = 'even-t3-v1'
 
+export interface EnvironmentSummary {
+  environmentId: string
+  label: string
+  kind: 'local' | 't3-connect' | 'bearer' | 'ssh' | 'wsl'
+  status: 'connected' | 'connecting' | 'offline' | 'error'
+  isPrimary: boolean
+  serverVersion?: string
+  errorCode?: string
+}
+
 export interface SessionSummary {
+  environmentId?: string
+  environmentLabel?: string
   hasPendingUserInput?: boolean
   id: string
   projectId: string
@@ -35,18 +47,36 @@ export interface SessionsListResult {
   frozenAt: string
   unsettled: SessionSummary[]
   settled: SessionSummary[]
+  environments?: EnvironmentSummary[]
+  partial?: boolean
 }
 
 export interface ProjectSummary {
+  environmentId?: string
+  environmentLabel?: string
   id: string
   title: string
   canStartSession: boolean
   updatedAt: string
 }
 
+export function sessionIdentity(session: Pick<SessionSummary, 'id' | 'environmentId'>): string {
+  return session.environmentId ? JSON.stringify([session.environmentId, session.id]) : session.id
+}
+
+export function projectIdentity(project: Pick<ProjectSummary, 'id' | 'environmentId'>): string {
+  return project.environmentId ? JSON.stringify([project.environmentId, project.id]) : project.id
+}
+
+export function environmentParameter(value: { environmentId?: string }): { environmentId?: string } {
+  return value.environmentId ? { environmentId: value.environmentId } : {}
+}
+
 export interface ProjectsListResult {
   snapshotId: string
   projects: ProjectSummary[]
+  environments?: EnvironmentSummary[]
+  partial?: boolean
 }
 
 export interface ReasoningChoice {
@@ -56,6 +86,8 @@ export interface ReasoningChoice {
 }
 
 export interface ModelSummary {
+  environmentId?: string
+  environmentLabel?: string
   instanceId: string
   providerName: string
   model: string
@@ -66,6 +98,9 @@ export interface ModelSummary {
 
 export interface ModelsListResult {
   models: ModelSummary[]
+  environmentId?: string
+  environments?: EnvironmentSummary[]
+  partial?: boolean
 }
 
 export interface NewSessionModelSelection {
@@ -107,6 +142,8 @@ export interface SessionTokenUsage {
 }
 
 export interface TranscriptResult {
+  environmentId?: string
+  environmentLabel?: string
   tokenUsage?: SessionTokenUsage
   snapshotId: string
   session: SessionSummary
@@ -143,6 +180,7 @@ export interface PlanAnswer {
 }
 
 export interface PlanSubmitResult {
+  environmentId?: string
   threadId: string
   requestId: string
   sequence: number
@@ -160,20 +198,21 @@ export interface VoiceDraftResult {
 }
 
 export interface SentTurnResult {
+  environmentId?: string
   threadId: string
   text: string
   sequence: number
 }
 
 export type VoiceTarget =
-  | { kind: 'thread'; threadId: string }
-  | { kind: 'project'; projectId: string; modelSelection: NewSessionModelSelection }
-  | { kind: 'assistant'; projectId: string; modelSelection: NewSessionModelSelection }
+  | { kind: 'thread'; threadId: string; environmentId?: string }
+  | { kind: 'project'; projectId: string; environmentId?: string; modelSelection: NewSessionModelSelection }
+  | { kind: 'assistant'; projectId: string; environmentId?: string; modelSelection: NewSessionModelSelection }
 
 export interface BridgeEvent {
   v: typeof PROTOCOL_VERSION
   type: 'event'
-  event: 'phone.changed' | 'connection.changed' | 'sessions.changed' | 'transcript.changed' | 'bridge.status' | 'archive.status' | 'voice.partial' | 'voice.error'
+  event: 'phone.changed' | 'connection.changed' | 'sessions.changed' | 'transcript.changed' | 'subscription.error' | 'bridge.status' | 'archive.status' | 'voice.partial' | 'voice.error'
   payload: unknown
 }
 
@@ -196,6 +235,7 @@ export type BridgeMethod =
   | 'plan.submit'
   | 'weather.locations'
   | 'weather.current'
+  | 'environments.list'
   | 'sessions.list'
   | 'projects.list'
   | 'models.list'
@@ -221,15 +261,16 @@ export type BridgeMethodResult = {
   'plan.submit': PlanSubmitResult
   'weather.locations': { locations: WeatherLocation[] }
   'weather.current': WeatherCurrentResult
+  'environments.list': { environments: EnvironmentSummary[] }
   'sessions.list': SessionsListResult
   'projects.list': ProjectsListResult
   'models.list': ModelsListResult
   'transcript.get': TranscriptResult
-  'transcript.unsubscribe': { threadId: string; unsubscribed: true }
-  'thread.model.set': { threadId: string; modelSelection: NewSessionModelSelection; sequence: number }
+  'transcript.unsubscribe': { environmentId?: string; threadId: string; unsubscribed: true }
+  'thread.model.set': { environmentId?: string; threadId: string; modelSelection: NewSessionModelSelection; sequence: number }
   'thread.start': SentTurnResult
   'assistant.start': SentTurnResult
-  'thread.settle': { threadId: string; settled: true; sequence: number }
+  'thread.settle': { environmentId?: string; threadId: string; settled: true; sequence: number }
   'turn.send': SentTurnResult
   'turn.steer': SentTurnResult
   'voice.start': VoiceStartResult

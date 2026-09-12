@@ -45,6 +45,28 @@ test('tool relay authenticates result peer, prevents replay, and never queues di
   assert.equal(sent.length, 2);
 });
 
+test('generic capability catalogs require protocol v1 and increasing revisions on one connection', () => {
+  const relay = new FaceclawRelay('assistant'); const peer = {};
+  const metadata = { 'org.faceclaw/capability': { protocolVersion: 1, provider: 'com.example/.Service', profiles: [{ id: 'org.faceclaw.profile.echo', version: 1 }] } };
+  const params = { protocolVersion: 1, catalogRevision: 1, projectId: 'assistant', tools: [{ ...tool, _meta: metadata }] };
+  assert.throws(() => relay.register(peer, { projectId: 'assistant', tools: [tool] }, () => {}, true), /protocol/);
+  relay.register(peer, params, () => {}, true);
+  assert.deepEqual(relay.list().tools[0]?._meta, metadata);
+  assert.throws(() => relay.register(peer, params, () => {}, true), /revision/);
+  assert.deepEqual(relay.register(peer, { ...params, catalogRevision: 2 }, () => {}, true), { registered: true });
+  assert.throws(() => relay.register(peer, { ...params, protocolVersion: 2, catalogRevision: 3 }, () => {}, true), /protocol/);
+});
+
+test('relay rejects arguments outside the registered capability schema before dispatch', async () => {
+  const relay = new FaceclawRelay('assistant'); const peer = {}, sent: unknown[] = [];
+  relay.register(peer, { protocolVersion: 1, catalogRevision: 1, projectId: 'assistant', tools: [{ ...tool,
+    inputSchema: { type: 'object', properties: { query: { type: 'string', minLength: 1, maxLength: 20 } }, required: ['query'], additionalProperties: false },
+  }] }, value => sent.push(value));
+  const binding = { projectId: 'assistant', threadId: 'thread-1', expiresAt: Date.now() + 60_000 };
+  await assert.rejects(relay.call(binding, 'invalid-1', { name: tool.name, arguments: { query: '', extra: true } }), /Invalid tool call/);
+  assert.equal(sent.length, 0);
+});
+
 test('Faceclaw native pairing and socket retain browser/companion credential separation and existing T3 APIs', async () => {
   const origin = 'https://hub.example';
   const config = loadConfig({ BRIDGE_TOKEN: secret, BRIDGE_PASSPHRASE: 'pair-secret', BRIDGE_ALLOWED_ORIGINS: origin, BRIDGE_POLL_INTERVAL_MS: '60000' });

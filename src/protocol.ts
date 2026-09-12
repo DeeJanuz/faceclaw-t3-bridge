@@ -3,6 +3,7 @@ export const PROTOCOL_VERSION = 1 as const
 export const BRIDGE_PROTOCOL = 'even-t3-v1'
 
 export interface SessionSummary {
+  hasPendingUserInput?: boolean
   id: string
   projectId: string
   projectTitle: string
@@ -199,6 +200,8 @@ export type BridgeMethod =
   | 'projects.list'
   | 'models.list'
   | 'transcript.get'
+  | 'transcript.unsubscribe'
+  | 'thread.model.set'
   | 'thread.start'
   | 'assistant.start'
   | 'thread.settle'
@@ -222,6 +225,8 @@ export type BridgeMethodResult = {
   'projects.list': ProjectsListResult
   'models.list': ModelsListResult
   'transcript.get': TranscriptResult
+  'transcript.unsubscribe': { threadId: string; unsubscribed: true }
+  'thread.model.set': { threadId: string; modelSelection: NewSessionModelSelection; sequence: number }
   'thread.start': SentTurnResult
   'assistant.start': SentTurnResult
   'thread.settle': { threadId: string; settled: true; sequence: number }

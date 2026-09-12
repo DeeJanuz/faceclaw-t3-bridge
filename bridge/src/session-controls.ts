@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { findProject, findThread } from "./normalize.js";
 import { ApiError, isSafeId } from "./security.js";
-import type { BridgeConfig, T3Client, T3Thread, T3ThreadShell } from "./types.js";
+import type { BridgeConfig, T3Client, T3NewSessionSelection, T3Thread, T3ThreadShell } from "./types.js";
 
 const digest = (value: unknown) => createHash("sha256").update(JSON.stringify(value)).digest("hex");
 function record(value: unknown): value is Record<string, unknown> {
@@ -72,7 +72,33 @@ export async function freshAllowedThread(client: Pick<T3Client, "shell" | "threa
 
 export class SessionControlsService {
   private readonly approvals = new Map<string, Promise<{ threadId: string; planId: string; sequence: number }>>();
-  constructor(private readonly client: Pick<T3Client, "shell" | "thread" | "approvePlan" | "setReasoning">, private readonly config: BridgeConfig) {}
+  constructor(private readonly client: Pick<T3Client, "shell" | "thread" | "approvePlan" | "setModel" | "setReasoning">, private readonly config: BridgeConfig) {}
+
+  async setModel(params: Record<string, unknown>) {
+    if (Object.keys(params).some((key) => !["threadId", "selection", "expectedModel"].includes(key)) ||
+        typeof params.threadId !== "string" || !isSafeId(params.threadId) || !record(params.selection) ||
+        Object.keys(params.selection).some((key) => !["instanceId", "model", "reasoningId"].includes(key)) ||
+        !text(params.selection.instanceId, 128) || !isSafeId(params.selection.instanceId) ||
+        !text(params.selection.model, 256) || !record(params.expectedModel) ||
+        Object.keys(params.expectedModel).some((key) => !["instanceId", "model"].includes(key)) ||
+        !text(params.expectedModel.instanceId, 128) || !text(params.expectedModel.model, 256) ||
+        (params.selection.reasoningId !== undefined && (!text(params.selection.reasoningId, 128) || !isSafeId(params.selection.reasoningId)))) {
+      throw invalid();
+    }
+    const thread = await freshAllowedThread(this.client, this.config, params.threadId);
+    requireIdleSession(thread);
+    if (thread.modelSelection.instanceId !== params.expectedModel.instanceId || thread.modelSelection.model !== params.expectedModel.model) {
+      throw new ApiError(409, "model_selection_changed", "The session model changed. Refresh the session.");
+    }
+    if (!this.client.setModel) throw new ApiError(502, "upstream_incompatible", "Session model controls are unavailable");
+    const selection: T3NewSessionSelection = {
+      instanceId: params.selection.instanceId as string,
+      model: params.selection.model as string,
+      ...(params.selection.reasoningId === undefined ? {} : { reasoningId: params.selection.reasoningId as string }),
+    };
+    const result = await this.client.setModel({ thread, selection });
+    return { threadId: thread.id, modelSelection: selection, sequence: result.sequence };
+  }
 
   async setReasoning(params: Record<string, unknown>) {
     if (Object.keys(params).some((key) => !["threadId", "reasoningId", "expectedModel"].includes(key)) ||

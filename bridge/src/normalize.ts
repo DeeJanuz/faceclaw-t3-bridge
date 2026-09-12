@@ -127,6 +127,7 @@ function sessionSummary(thread: T3ThreadShell, projects: ReadonlyMap<string, T3P
     lastActivityAt: activityAt(thread),
     settled: thread.settledOverride === "settled",
     completedTurn: completedTurn(thread),
+    hasPendingUserInput: thread.hasPendingUserInput === true && thread.latestTurn?.state === "running",
   };
 }
 
@@ -659,6 +660,7 @@ export function normalizeTranscript(snapshot: T3ThreadSnapshot, projectTitle = "
       lastActivityAt: activityAt(snapshot.thread),
       settled: snapshot.thread.settledOverride === "settled",
       completedTurn: completedTurn(snapshot.thread),
+      hasPendingUserInput: snapshot.thread.hasPendingUserInput === true && snapshot.thread.latestTurn?.state === "running",
       ...normalizeSessionSettings(snapshot.thread),
     },
     tokenUsage: normalizeTokenUsage(snapshot.thread.activities),

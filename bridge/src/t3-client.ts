@@ -241,6 +241,9 @@ function websocketDataText(data: RawData): string {
 }
 
 export class HttpT3Client implements T3Client {
+  private modelCatalogCache: { value: ParsedModelCatalog; expiresAt: number } | null = null;
+  private modelCatalogInFlight: Promise<ParsedModelCatalog> | null = null;
+
   constructor(private readonly config: BridgeConfig) {
     if (!config.t3AccessToken) throw new ApiError(503, "upstream_unavailable", "T3 Code is unavailable");
   }
@@ -316,7 +319,22 @@ export class HttpT3Client implements T3Client {
     return publicCatalog(await this.readModelCatalog());
   }
 
-  private async readModelCatalog(): Promise<ParsedModelCatalog> {
+  private async readModelCatalog(force = false): Promise<ParsedModelCatalog> {
+    const now = Date.now();
+    if (!force && this.modelCatalogCache && this.modelCatalogCache.expiresAt > now) return this.modelCatalogCache.value;
+    if (this.modelCatalogInFlight) return this.modelCatalogInFlight;
+    const request = this.fetchModelCatalog();
+    this.modelCatalogInFlight = request;
+    try {
+      const value = await request;
+      this.modelCatalogCache = { value, expiresAt: Date.now() + 30_000 };
+      return value;
+    } finally {
+      if (this.modelCatalogInFlight === request) this.modelCatalogInFlight = null;
+    }
+  }
+
+  private async fetchModelCatalog(): Promise<ParsedModelCatalog> {
     const requestId = randomUUID();
     const url = new URL("/ws", this.config.t3BaseUrl);
     url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
@@ -429,7 +447,7 @@ export class HttpT3Client implements T3Client {
       instanceId: input.project.defaultModelSelection!.instanceId,
       model: input.project.defaultModelSelection!.model,
     };
-    const catalog = await this.readModelCatalog();
+    const catalog = await this.readModelCatalog(true);
     const provider = catalog.providers.find((candidate) => candidate.instanceId === requested.instanceId);
     if (provider === undefined) {
       throw new ApiError(409, "provider_selection_unavailable", "The selected provider is not available in T3 Code");
@@ -523,7 +541,7 @@ export class HttpT3Client implements T3Client {
 
   async setReasoning(input: { readonly thread: T3ThreadShell; readonly reasoningId: string }): Promise<{ readonly sequence: number }> {
     const selection = input.thread.modelSelection;
-    const catalog = await this.readModelCatalog();
+    const catalog = await this.readModelCatalog(true);
     const model = catalog.providers.find((provider) => provider.instanceId === selection.instanceId)
       ?.models.find((model) => model.slug === selection.model);
     const reasoning = model?.reasoning;
@@ -543,6 +561,36 @@ export class HttpT3Client implements T3Client {
       { id: reasoning.t3OptionId, value: input.reasoningId }];
     return this.dispatch({ type: "thread.meta.update", commandId: randomUUID(), threadId: input.thread.id,
       modelSelection: { ...current.modelSelection, options } });
+  }
+
+  async setModel(input: { readonly thread: T3ThreadShell; readonly selection: T3NewSessionSelection }): Promise<{ readonly sequence: number }> {
+    const catalog = await this.readModelCatalog(true);
+    const provider = catalog.providers.find((candidate) => candidate.instanceId === input.selection.instanceId);
+    const model = provider?.models.find((candidate) => candidate.slug === input.selection.model);
+    if (!provider) throw new ApiError(409, "provider_selection_unavailable", "The selected provider is not available in T3 Code");
+    if (!model) throw new ApiError(409, "model_selection_unavailable", "The selected model is not available in T3 Code");
+    const options: T3ProviderOptionSelection[] = [];
+    if (model.reasoning !== null) {
+      const reasoningId = input.selection.reasoningId ?? model.reasoning.defaultChoiceId;
+      if (reasoningId !== null) {
+        if (!model.reasoning.choices.some((choice) => choice.id === reasoningId)) {
+          throw new ApiError(409, "reasoning_selection_unavailable", "The selected reasoning level is not available for this model");
+        }
+        options.push({ id: model.reasoning.t3OptionId, value: reasoningId });
+      }
+    } else if (input.selection.reasoningId !== undefined) {
+      throw new ApiError(409, "reasoning_selection_unavailable", "This model does not support reasoning levels");
+    }
+    if (model.supportsStandardServiceTier) options.push({ id: "serviceTier", value: "default" });
+    if (model.supportsFastMode) options.push({ id: "fastMode", value: false });
+    const current = (await this.thread(input.thread.id)).thread;
+    if (current.id !== input.thread.id || current.projectId !== input.thread.projectId || current.archivedAt !== null ||
+        current.modelSelection.instanceId !== input.thread.modelSelection.instanceId || current.modelSelection.model !== input.thread.modelSelection.model) {
+      throw new ApiError(409, "model_selection_changed", "The session model changed. Refresh the session.");
+    }
+    requireIdleSession(current);
+    return this.dispatch({ type: "thread.meta.update", commandId: randomUUID(), threadId: current.id,
+      modelSelection: { instanceId: provider.instanceId, model: model.slug, ...(options.length > 0 ? { options } : {}) } });
   }
 
   async approvePlan(input: { readonly thread: T3ThreadShell; readonly planId: string; readonly planMarkdown: string; readonly commandId: string }): Promise<{ readonly sequence: number }> {

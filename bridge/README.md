@@ -4,6 +4,30 @@ Local, authenticated bridge for the Even Hub dashboard, an Android notification 
 
 The optional [Faceclaw integration](../docs/faceclaw.md) adds a separate native endpoint, on-demand Luna refinement, and a project-scoped Codex provider launcher for phone/glasses tools. Existing Hub and companion clients retain their routes and credential boundaries. Use the isolated Faceclaw fixture for emulator UI testing before selecting the new provider in T3.
 
+### Public Faceclaw capability relay
+
+The native endpoint implements Faceclaw capability protocol v1 independently of
+T3 tool names. A connected bridge adapter registers its current callable catalog
+with `faceclaw.capabilities.register { protocolVersion: 1, catalogRevision,
+projectId, tools }`. Revisions must increase during one socket connection. Calls
+arrive as `faceclaw.capability.call`; the adapter answers once with
+`faceclaw.capabilities.result`. Legacy `faceclaw.tools.*` names remain accepted
+for rolling upgrades.
+
+The project-scoped MCP endpoint exposes that catalog through ordinary `tools/list`
+and `tools/call`. It validates arguments against each registered schema before
+dispatch, binds calls to the provider session or thread credential, records replay
+receipts before sending, and treats disconnect or timeout as an unknown outcome.
+Another assistant bridge can implement these same generic messages without T3
+code or provider-specific knowledge. The phone-side adapter remains responsible
+for its Faceclaw host approval, `device-tools` grant, pairing identity, catalog
+updates, and result-visibility filtering.
+
+Dynamic tools retain their version, installed provider identity, kind, visibility,
+durability, operation class, and standard profile IDs under the namespaced MCP
+`_meta["org.faceclaw/capability"]` object. Clients may ignore that metadata; bridges
+can use it for explicit provider choice, profile matching, and audit displays.
+
 ## Security model
 
 The Even Hub WebView is an untrusted network client. The bridge holds the T3 credential and returns a reduced data model. It omits workspace paths, attachments, raw activity and tool payloads, tool results, and upstream error bodies. Live activity may include a bounded, redacted label such as an exact command preview. Transcript message text remains sensitive because showing it is the app's purpose.
@@ -167,7 +191,7 @@ Methods:
 Session summaries in lists, `sessions.changed`, and transcripts also include `completedTurn: { id, completedAt } | null`. It is present only for an explicitly completed latest turn with a valid bounded ID and timestamp. The client treats the field as optional for compatibility with older bridges. It does not infer completion from the settled flag.
 - `projects.list {}` returns `{ snapshotId, projects }`. Each project has `id`, `title`, `canStartSession`, and `updatedAt`.
 - `models.list {}` returns a flat list of usable provider/model choices and model-specific reasoning levels. It omits T3 option IDs, account details, and authentication state.
-- `transcript.get { threadId }` returns `{ snapshotId, session, turns, liveActivity, liveActivities }` and subscribes that socket to transcript updates. A user message starts a turn. Following assistant/system messages stay in that turn until the next user message. Each turn includes `durationSeconds` and `separatorLabel`. During an active turn, `liveActivity` reports the current thinking or tool phase. `liveActivities` contains at most 32 ordered markers with bounded, redacted display labels, stable bridge IDs, and timestamps. Supported command activities may include the redacted command preview that T3 shows. Both activity fields become empty when the turn settles. Raw tool arguments, results, correlation IDs, and upstream error bodies never cross the bridge.
+- `transcript.get { threadId }` returns `{ snapshotId, session, turns, liveActivity, liveActivities }` and subscribes that socket to transcript updates. `transcript.unsubscribe { threadId }` releases that socket's subscription when the reader leaves a session. A user message starts a turn. Following assistant/system messages stay in that turn until the next user message. Each turn includes `durationSeconds` and `separatorLabel`. During an active turn, `liveActivity` reports the current thinking or tool phase. `liveActivities` contains at most 32 ordered markers with bounded, redacted display labels, stable bridge IDs, and timestamps. Supported command activities may include the redacted command preview that T3 shows. Both activity fields become empty when the turn settles. Raw tool arguments, results, correlation IDs, and upstream error bodies never cross the bridge.
 
 When T3 marks the latest turn completed and identifies its authoritative assistant message, the bridge removes temporary assistant progress messages from that turn. The identifier must match a bounded assistant message on the same turn. Missing or invalid identifiers leave all messages intact.
 - `thread.start { projectId, modelSelection: { instanceId, model, reasoningId? }, text }` creates the thread, then starts its first turn, both with server-selected `full-access`. It returns `{ threadId, text, sequence }`.

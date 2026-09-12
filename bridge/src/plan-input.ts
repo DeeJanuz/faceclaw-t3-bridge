@@ -63,7 +63,7 @@ function questions(value: unknown): PlanQuestion[] | null {
 
 /** Only the provider's structured user-input lifecycle is actionable, never approvals. */
 export function normalizePendingPlanInput(thread: T3Thread): PendingPlanInput | null {
-  if (thread.interactionMode !== "plan" || thread.archivedAt !== null ||
+  if (!["default", "plan"].includes(thread.interactionMode) || thread.archivedAt !== null ||
       thread.hasPendingUserInput === false || thread.latestTurn?.state !== "running" ||
       !thread.session || !["running", "ready"].includes(thread.session.status) ||
       (thread.session.activeTurnId != null && thread.session.activeTurnId !== thread.latestTurn.turnId) ||
@@ -160,7 +160,7 @@ export class PlanInputService {
       throw new ApiError(502, "upstream_invalid_response", "T3 Code returned an invalid response");
     }
     const pending = normalizePendingPlanInput(snapshot.thread);
-    if (!pending || pending.requestId !== requestId || pending.revision !== params.revision || allowed.interactionMode !== "plan") throw unavailable();
+    if (!pending || pending.requestId !== requestId || pending.revision !== params.revision || !["default", "plan"].includes(allowed.interactionMode)) throw unavailable();
     const answers = validatePlanAnswers(params.answers, pending, this.config.maxTextChars);
     const key = digest([threadId, requestId]);
     const fingerprint = digest([pending.revision, answers]);

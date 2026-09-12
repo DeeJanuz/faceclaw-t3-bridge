@@ -409,6 +409,11 @@ class EventHub {
     state.threadSequences.set(threadId, snapshot.snapshotSequence);
   }
 
+  unsubscribe(state: SocketState, threadId: string): void {
+    state.subscriptions.delete(threadId);
+    state.threadSequences.delete(threadId);
+  }
+
   private async poll(): Promise<void> {
     if (this.polling || this.states.size === 0) return;
     this.polling = true;
@@ -577,6 +582,14 @@ async function routeRpc(
         "Unknown project";
       return normalizeTranscript(snapshot, projectTitle);
     }
+    case "transcript.unsubscribe": {
+      const threadId = requiredId(request.params, "threadId");
+      if (Object.keys(request.params).some((key) => key !== "threadId")) {
+        throw new ApiError(400, "invalid_request", "Unsubscribe accepts only threadId");
+      }
+      events.unsubscribe(state, threadId);
+      return { threadId, unsubscribed: true };
+    }
     case "assistant.start":
     case "thread.start": {
       // Keep assistant requests strict; new-session permissions are selected
@@ -619,6 +632,7 @@ async function routeRpc(
       const result = await client.settleThread(threadId);
       return { threadId, settled: true, sequence: result.sequence };
     }
+    case "thread.model.set": return controls.setModel(request.params);
     case "thread.reasoning.set": return controls.setReasoning(request.params);
     case "turn.send": {
       const threadId = requiredId(request.params, "threadId");
@@ -1134,7 +1148,7 @@ export function createBridgeServer(
         return;
       }
       const dispatch = async (): Promise<unknown> => {
-        if (state.nativeFaceclaw && request.method !== 'refinement.cancel' && request.method !== 'faceclaw.tools.result' && !faceclawRpcLimiter.allow(clientKey(handshake))) {
+        if (state.nativeFaceclaw && request.method !== 'refinement.cancel' && !['faceclaw.tools.result','faceclaw.capabilities.result'].includes(request.method) && !faceclawRpcLimiter.allow(clientKey(handshake))) {
           throw new ApiError(429, 'rate_limited', 'Too many Faceclaw requests');
         }
         if (request.method.startsWith('faceclaw.') || request.method.startsWith('refinement.')) {
@@ -1142,6 +1156,8 @@ export function createBridgeServer(
           switch (request.method) {
             case 'faceclaw.tools.register': return relay.register(state, request.params, payload => sendEvent(state, 'faceclaw.tool.call', payload));
             case 'faceclaw.tools.result': return relay.result(state, request.params);
+            case 'faceclaw.capabilities.register': return relay.register(state, request.params, payload => sendEvent(state, 'faceclaw.capability.call', payload), true);
+            case 'faceclaw.capabilities.result': return relay.result(state, request.params);
             case 'refinement.cancel': {
               const cancelled = state.refinement !== null;
               state.refinement?.abort();

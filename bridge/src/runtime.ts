@@ -38,6 +38,21 @@ export class RecoveringT3Client implements T3Client {
     return client.threadPage(id, cursor);
   }
   async modelCatalog() { return this.ready().modelCatalog(); }
+  async setModel(input: Parameters<NonNullable<T3Client['setModel']>>[0]) {
+    const client = this.ready();
+    if (!client.setModel) throw new ApiError(502, 'upstream_incompatible', 'Session model controls are unavailable');
+    return client.setModel(input);
+  }
+  async setReasoning(input: Parameters<NonNullable<T3Client['setReasoning']>>[0]) {
+    const client = this.ready();
+    if (!client.setReasoning) throw new ApiError(502, 'upstream_incompatible', 'Session reasoning controls are unavailable');
+    return client.setReasoning(input);
+  }
+  async approvePlan(input: Parameters<NonNullable<T3Client['approvePlan']>>[0]) {
+    const client = this.ready();
+    if (!client.approvePlan) throw new ApiError(502, 'upstream_incompatible', 'Plan approval is unavailable');
+    return client.approvePlan(input);
+  }
   async startSession(input: Parameters<T3Client['startSession']>[0]) { return this.ready().startSession(input); }
   async sendMessage(input: Parameters<T3Client['sendMessage']>[0]) { return this.ready().sendMessage(input); }
   async steerMessage(input: Parameters<T3Client['steerMessage']>[0]) { return this.ready().steerMessage(input); }

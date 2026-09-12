@@ -37,9 +37,8 @@ describe("pending plan input normalization", () => {
     assert.equal(JSON.stringify(pending).includes("not forwarded"), false);
     assert.deepEqual(normalizeTranscript({ snapshotSequence: 1, thread: active() }).pendingPlanInput, pending);
   });
-  it("never presents approvals, default mode, stopped/old turns or explicitly absent pending input", () => {
+  it("never presents approvals, stopped/old turns or explicitly absent pending input", () => {
     for (const mutate of [
-      (t: T3Thread) => ({ ...t, interactionMode: "default" as const }),
       (t: T3Thread) => ({ ...t, hasPendingUserInput: false }),
       (t: T3Thread) => ({ ...t, session: null }),
       (t: T3Thread) => ({ ...t, latestTurn: { ...t.latestTurn!, state: "completed" } }),
@@ -128,5 +127,28 @@ describe("plan submission boundary", () => {
     assert.equal(commandIds.length, 1);
     await assert.rejects(new PlanInputService(f.client, f.config).submit(f.params), { code: "plan_submission_uncertain" });
     assert.equal(commandIds[0], commandIds[1]);
+  });
+});
+
+
+describe("normal-mode user-input requests", () => {
+  it("forwards and answers an active normal-mode question through the same single-use response path", async () => {
+    const f=fixture();f.thread.interactionMode="default";
+    const request=normalizePendingPlanInput(f.thread)!;
+    assert.deepEqual(request.questions,[q]);
+    assert.deepEqual(normalizeTranscript({snapshotSequence:1,thread:f.thread}).pendingPlanInput,request);
+    const service=new PlanInputService(f.client,f.config);
+    await service.submit({...f.params,revision:request.revision});
+    await service.submit({...f.params,revision:request.revision});
+    assert.equal(f.calls.length,1);assert.deepEqual(f.calls[0]!.answers,{[q.id]:"Small"});
+    assert.equal(f.thread.interactionMode,"default");
+  });
+  it("allows freeform-only questions and rejects a normal-mode request resolved on the desktop",async()=>{
+    const f=fixture();f.thread.interactionMode="default";
+    f.thread.activities=[{...f.thread.activities![0],payload:{requestId:"request",questions:[{...q,options:[]}]}}];
+    const request=normalizePendingPlanInput(f.thread)!;assert.equal(request.questions[0]!.options.length,0);
+    const params={...f.params,revision:request.revision,answers:[{questionId:q.id,optionIndexes:[],text:"Use the glasses dashboard"}]};
+    f.thread.activities=[...f.thread.activities,{kind:"user-input.resolved",createdAt:"2026-09-04T10:01:00.000Z",payload:{requestId:"request"}}];
+    await assert.rejects(new PlanInputService(f.client,f.config).submit(params),{code:"plan_request_unavailable"});assert.equal(f.calls.length,0);
   });
 });

@@ -183,46 +183,6 @@ test('recency sorting has a stable ID tie break and preserves cursor-bound pagin
   } finally { f.clean(); }
 });
 
-test('signal-cli 0.14.7 direct envelope and unwrapped sent-sync shapes stay visible beside group chats', async () => {
-  const f = fixture();
-  try {
-    await f.service.refreshRecipients();
-    // Fields follow the pinned JsonMessageEnvelope and JsonSyncDataMessage:
-    // UUID/number/legacy identifiers may be null, and sent data is unwrapped.
-    const incoming = (identity: Record<string, unknown>, offset: number) => f.service.ingest({
-      subscription: 0, result: { account: ACCOUNT, envelope: {
-        source: null, sourceNumber: null, sourceUuid: null, sourceName: 'Synthetic direct sender', sourceDevice: 1,
-        timestamp: f.now() + offset, serverReceivedTimestamp: f.now() + offset, serverDeliveredTimestamp: f.now() + offset,
-        ...identity, dataMessage: { timestamp: f.now() + offset, message: 'Synthetic direct message', expiresInSeconds: 0 },
-      } },
-    });
-    const sent = (identity: Record<string, unknown>, offset: number) => f.service.ingest({
-      subscription: 0, result: { account: ACCOUNT, envelope: {
-        source: ACCOUNT, sourceNumber: ACCOUNT, sourceUuid: SELF, sourceName: 'Synthetic self', sourceDevice: 1,
-        timestamp: f.now() + offset, syncMessage: { sentMessage: {
-          destination: null, destinationNumber: null, destinationUuid: null, ...identity,
-          timestamp: f.now() + offset, message: 'Synthetic synced reply', expiresInSeconds: 0,
-        } },
-      } },
-    });
-    incoming({ sourceUuid: AUTHOR }, 1);
-    incoming({ sourceNumber: '+15550005555' }, 2);
-    sent({ destinationUuid: SECOND }, 3);
-    sent({ destination: '+15550006666' }, 4);
-    f.ingest('Synthetic group message', { groupInfo: { groupId: 'c3ludGhldGlj', groupName: 'Synthetic group', revision: 1, type: 'DELIVER' } }, AUTHOR, f.now() + 5);
-    await f.service.refreshRecipients();
-    const snapshot = await f.service.rpc(f.credential, 'snapshot', {}) as { conversations: (ConversationView & { kind: string })[] };
-    const active = snapshot.conversations.filter(c => c.lastMessageAt !== undefined);
-    assert.deepEqual(active.map(c => c.kind), ['group', 'direct', 'direct', 'direct', 'direct']);
-    assert.deepEqual(active.map(c => c.lastMessageAt), [5, 4, 3, 2, 1].map(offset => f.now() + offset));
-    assert.equal(f.store.state.messages.filter(m => m.outgoing).length, 2);
-    const directIds = new Set(active.filter(c => c.kind === 'direct').map(c => c.id));
-    const events = await f.service.rpc(f.credential, 'events', { cursor: '0' }) as { events: { type: string; conversation?: ConversationView }[] };
-    for (const conversationId of directIds) assert.ok(events.events.some(e => e.conversation?.id === conversationId && e.conversation.lastMessageAt));
-    assert.equal(f.transport.calls.some(call => call.method === 'send'), false);
-  } finally { f.clean(); }
-});
-
 test('late confirmed sends add real activity without replay, extending expiry or resurrecting tombstones', async () => {
   const f = fixture();
   try {

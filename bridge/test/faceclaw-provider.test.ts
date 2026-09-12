@@ -66,13 +66,13 @@ test('automatic provider launcher injects scoped MCP, relays a tool to authentic
     const registered = new Promise<void>(resolve => socket.on('message', data => {
       const value = JSON.parse(data.toString());
       if (value.id === 'register' && value.ok) resolve();
-      if (value.event === 'faceclaw.tool.call') {
+      if (value.event === 'faceclaw.capability.call') {
         assert.equal(value.payload.bindingKind, 'provider-session');
         assert.equal(value.payload.threadId, undefined);
-        socket.send(JSON.stringify({ v: 1, type: 'request', id: 'result', method: 'faceclaw.tools.result', params: { callId: value.payload.callId, result: { content: [{ type: 'text', text: 'shown' }] } } }));
+        socket.send(JSON.stringify({ v: 1, type: 'request', id: 'result', method: 'faceclaw.capabilities.result', params: { callId: value.payload.callId, result: { content: [{ type: 'text', text: 'shown' }] } } }));
       }
     }));
-    socket.send(JSON.stringify({ v: 1, type: 'request', id: 'register', method: 'faceclaw.tools.register', params: { projectId: 'assistant', tools: [{ name: 'display_text', description: 'Show text', inputSchema: { type: 'object' } }] } }));
+    socket.send(JSON.stringify({ v: 1, type: 'request', id: 'register', method: 'faceclaw.capabilities.register', params: { protocolVersion: 1, catalogRevision: 1, projectId: 'assistant', tools: [{ name: 'display_text', description: 'Show text', inputSchema: { type: 'object' } }] } }));
     await registered;
     const executable = join(dir, 'fake-codex.mjs');
     await writeFile(executable, `#!/usr/bin/env node\nconst config=process.argv.find(x=>x.startsWith('mcp_servers.faceclaw='));if(!config || process.env.BRIDGE_TEST_SECRET) process.exit(2);const url=JSON.parse(config.match(/url=(\"[^\"]+\")/)[1]);const token=process.env.FACECLAW_SESSION_TOKEN;const send=async(id,method,params={})=>(await fetch(url,{method:'POST',headers:{Authorization:'Bearer '+token,'Content-Type':'application/json'},body:JSON.stringify({jsonrpc:'2.0',id,method,params})})).json();const tools=await send(1,'tools/list');const result=await send(2,'tools/call',{name:tools.result.tools[0].name,arguments:{text:'hello'}});process.stdout.write(JSON.stringify({result,token}));\n`, { mode: 0o700 });

@@ -195,6 +195,7 @@ export interface T3Descriptor {
 }
 
 export interface T3Client {
+  setModel?(input: { readonly thread: T3ThreadShell; readonly selection: T3NewSessionSelection }): Promise<{ readonly sequence: number }>;
   setReasoning?(input: { readonly thread: T3ThreadShell; readonly reasoningId: string }): Promise<{ readonly sequence: number }>;
   approvePlan?(input: { readonly thread: T3ThreadShell; readonly planId: string; readonly planMarkdown: string; readonly commandId: string }): Promise<{ readonly sequence: number }>;
   settleThread(threadId: string): Promise<{ readonly sequence: number }>;

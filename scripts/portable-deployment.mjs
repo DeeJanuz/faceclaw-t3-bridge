@@ -26,6 +26,7 @@ export function cleanPath(value, platform = process.platform) {
 }
 export function bridgeEnvironment(config) {
   return {
+    ...(config.peerDirectory ? { BRIDGE_PEER_DIRECTORY: cleanPath(config.peerDirectory) } : {}),
     BRIDGE_HOST: '127.0.0.1', BRIDGE_PORT: String(validatePort(config.bridgePort)),
     BRIDGE_ALLOWED_ORIGINS: 'null', BRIDGE_ALLOW_EVEN_LOOPBACK_ORIGIN: 'true', BRIDGE_ALLOW_NO_ORIGIN: 'false',
     BRIDGE_RUNTIME_MODE: 'approval-required', T3_BASE_URL: loopbackT3Url(config.t3BaseUrl),

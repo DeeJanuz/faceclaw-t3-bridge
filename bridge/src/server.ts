@@ -12,7 +12,8 @@ import { WeatherService } from "./weather.js";
 import { SessionControlsService, freshAllowedThread, requireIdleSession } from "./session-controls.js";
 import { PlanInputService } from "./plan-input.js";
 import { BridgeServiceRegistry } from "./service-registry.js";
-import { asEnvironmentRouter, isEnvironmentRouter, PrimaryEnvironmentClient } from "./environment-router.js";
+import { PeerService, type PeerClientFactory } from "./peer-service.js";
+import { ManagedEnvironmentRouter, asEnvironmentRouter, isEnvironmentRouter, PrimaryEnvironmentClient } from "./environment-router.js";
 import {
   findProject,
   findThread,
@@ -1088,10 +1089,13 @@ export function createBridgeServer(
   config: BridgeConfig,
   clientOrRouter: T3Client | T3EnvironmentRouter,
   transcriber: Transcriber,
+  peerClientFactory?: PeerClientFactory,
 ): Server {
   const aggregateMode = isEnvironmentRouter(clientOrRouter);
   const router = asEnvironmentRouter(clientOrRouter);
   const client = new PrimaryEnvironmentClient(router);
+  const peers = config.peerDirectory && router instanceof ManagedEnvironmentRouter
+    ? new PeerService(config, router, config.peerDirectory, peerClientFactory) : null;
   const signal = SignalHttp.create(config);
   const nativeToken = faceclawToken(config.bridgeToken);
   // Session tool credentials intentionally die with the bridge process, so old
@@ -1156,6 +1160,7 @@ export function createBridgeServer(
     let status = 500;
     void (async () => {
       try {
+        if (peers && await peers.http(request, response)) { status = response.statusCode; return; }
         const isPhoneSync = request.url === "/v1/phone/sync";
         if (!(isPhoneSync ? phoneLimiter : limiter).allow(clientKey(request))) {
           throw new ApiError(429, "rate_limited", "Too many requests");
@@ -1276,6 +1281,7 @@ export function createBridgeServer(
   });
 
   server.on("upgrade", (request, socket, head) => {
+    if (peers?.upgrade(request, socket, head)) return;
     const url = new URL(request.url ?? "/", "http://bridge.invalid");
     const native = url.pathname === '/v1/faceclaw/events';
     if (
@@ -1396,6 +1402,7 @@ export function createBridgeServer(
   server.once("listening", () => archive.start());
   server.once('listening', () => signal?.start());
   server.on("close", () => {
+    peers?.close();
     signal?.close();
     archive.stop();
     phone.close();
@@ -1403,5 +1410,7 @@ export function createBridgeServer(
     websocketServer.close();
   });
 
+  const close = server.close.bind(server);
+  server.close = (callback?: (error?: Error) => void) => { peers?.close(); return close(callback); };
   return server;
 }

@@ -98,6 +98,11 @@ export class ManagedEnvironmentRouter implements T3EnvironmentRouter {
     }
   }
 
+  removeEnvironment(environmentId: string, kind: T3EnvironmentKind): void {
+    const entry = this.entries.get(environmentId);
+    if (entry?.environment.kind === kind && !entry.environment.isPrimary) this.entries.delete(environmentId);
+  }
+
   removePrimary(): void {
     if (!this.primaryId) return;
     this.entries.delete(this.primaryId);

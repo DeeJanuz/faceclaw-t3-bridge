@@ -61,9 +61,11 @@ describe("T3 Connect discovery", () => {
       if (url.href === "https://relay.example/v1/environments") {
         assert.equal(headers.get("authorization"), "Bearer cloud-access");
         return json({ environments: [{ environmentId: "remote-1", label: "Studio Mac", linkedAt: "2026-09-01T00:00:00.000Z",
-          endpoint: { httpBaseUrl: "https://listed-endpoint.example", wsBaseUrl: "wss://listed-endpoint.example", providerKind: "relay" } }] });
+          endpoint: { httpBaseUrl: "https://listed-endpoint.example", wsBaseUrl: "wss://listed-endpoint.example/ws", providerKind: "relay" } }] });
       }
       if (url.href === "https://relay.example/v1/client/dpop-token") {
+        const form = new URLSearchParams(String(init.body));
+        assert.equal(form.get("resource"), "https://relay.example");
         verifiedDpop(headers, "POST", url.href);
         return json({ access_token: "relay-access", issued_token_type: accessTokenType,
           token_type: "DPoP", expires_in: 600,

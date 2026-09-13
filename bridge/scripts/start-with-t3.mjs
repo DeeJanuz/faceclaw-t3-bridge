@@ -277,6 +277,16 @@ export async function main() {
   }
   const { loadConfig } = await import("../dist/src/config.js");
   const { startBridgeRuntime } = await import("../dist/src/runtime.js");
+  if (process.platform === 'darwin' && !process.env.BRIDGE_PEER_DIRECTORY) {
+    const directory = path.join(dataDirectory(), 'peers');
+    try {
+      const { readPeerFile } = await import('../dist/src/peer-store.js');
+      const settings = JSON.parse(await readPeerFile(path.join(directory, 'settings.json')));
+      if (settings.enabled === true) process.env.BRIDGE_PEER_DIRECTORY = directory;
+    } catch (error) {
+      if (error.code !== 'ENOENT') process.stderr.write('Peer settings unavailable; starting local T3 only.\n');
+    }
+  }
   const config = loadConfig();
   const baseUrl = new URL(loopbackT3Url(config.t3BaseUrl.href));
   const requestedBaseDir = path.resolve(process.env.T3_BASE_DIR || path.join(homedir(), ".t3"));
@@ -316,10 +326,7 @@ export async function main() {
       await runtime.useT3Token(session.accessToken);
       return true;
     })();
-    // Account-linked environments do not depend on the local T3 server or
-    // temporary local session, so discover both sources independently.
-    const connectAttempt = runtime.syncT3Connect(baseDir).then(count => count > 0);
-    const [local, connect] = await Promise.allSettled([localAttempt, connectAttempt]);
+    const [local] = await Promise.allSettled([localAttempt]);
     if (local.status === "rejected") {
       runtime.clearT3();
       if (local.reason?.code === "upstream_auth_failed" && session !== null) {
@@ -327,10 +334,8 @@ export async function main() {
         await revoke(expired);
       }
     }
-    if (connect.status === "rejected") runtime.clearT3Connect();
     if (!stopping) {
-      status("T3", (local.status === "fulfilled" && local.value) ||
-        (connect.status === "fulfilled" && connect.value));
+      status("T3", local.status === "fulfilled" && local.value);
       t3Timer = setTimeout(() => { t3Work = refreshT3(); }, 10_000);
     }
   }
@@ -367,11 +372,11 @@ export async function main() {
       if (stopping) return;
       stopping = true;
       clearTimeout(t3Timer); clearTimeout(whisperTimer);
-      runtime.clearT3(); runtime.clearT3Connect(); runtime.useWhisper(null);
+      runtime.clearT3(); runtime.useWhisper(null);
       runtime.server.close();
       // In-flight mint owns a session too; wait before revocation, even on shutdown.
       await Promise.allSettled([t3Work, whisperWork]);
-      runtime.clearT3(); runtime.clearT3Connect();
+      runtime.clearT3();
       await Promise.allSettled([revoke(session), stopManagedWhisper(whisperChild)]);
       resolve();
     };

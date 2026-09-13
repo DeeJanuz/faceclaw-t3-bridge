@@ -16,7 +16,8 @@
     "connection-info": "./scripts/show-connection-info.sh",
     "deploy:package": "./scripts/package-evenhub.mjs",
     "test:deployment": "node --test scripts/deployment-helpers.test.mjs scripts/portable-deployment.test.mjs",
-    "dev:phone": "npm --prefix bridge run build && node scripts/phone-dev-server.mjs"
+    "dev:phone": "npm --prefix bridge run build && node scripts/phone-dev-server.mjs",
+    "peers": "node scripts/peers.mjs"
   },
   "dependencies": {
     "@evenrealities/even_hub_sdk": "0.0.14",

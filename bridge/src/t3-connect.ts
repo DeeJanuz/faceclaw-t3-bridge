@@ -61,8 +61,11 @@ function labelText(value: unknown): value is string {
 function secureOrigin(value: unknown, protocol: "https:" | "wss:"): URL {
   if (typeof value !== "string" || value.length > 2048) throw new Error("Invalid T3 Connect endpoint");
   const url = new URL(value);
-  if (url.protocol !== protocol || url.username || url.password || url.search || url.hash ||
-      (url.pathname !== "/" && url.pathname !== "")) throw new Error("Invalid T3 Connect endpoint");
+  const validPath = url.pathname === "/" || url.pathname === "" ||
+    (protocol === "wss:" && url.pathname === "/ws");
+  if (url.protocol !== protocol || url.username || url.password || url.search || url.hash || !validPath) {
+    throw new Error("Invalid T3 Connect endpoint");
+  }
   return url;
 }
 
@@ -328,7 +331,7 @@ export class T3ConnectManager {
           subject_token: cloud.accessToken,
           subject_token_type: "urn:ietf:params:oauth:token-type:jwt",
           requested_token_type: ACCESS_TOKEN_TYPE,
-          resource: relayUrl.toString(),
+          resource: relayUrl.origin,
           scope: RELAY_SCOPES,
           client_id: "t3-web",
         });

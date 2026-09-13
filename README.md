@@ -9,7 +9,7 @@ This work builds on the original Faceclaw and our earlier T3 bridge work. It is 
 ## How it fits together
 
 - **Faceclaw fork:** The phone and glasses experience, including assistant conversations, dictation, and device tools.
-- **Computer bridge:** Connects Faceclaw to the local T3 Code server and every environment linked to the same T3 Connect account, plus local Whisper transcription. T3 credentials remain on the computer; Faceclaw uses its own scoped pairing token.
+- **Computer bridge:** Connects Faceclaw to the local T3 Code server and the local environments of explicitly paired bridges over Tailscale, plus local Whisper transcription. T3 credentials remain on the computer; Faceclaw uses its own scoped pairing token.
 - **T3 Code:** Owns projects, conversations, models, and agent execution. T3 Code and a working agent/provider must already be installed for real assistant use.
 
 Keep the bridge on loopback. For a physical phone, use private HTTPS/WSS through Tailscale Serve with normal certificate validation. Keep T3 Code running and the computer awake while using the assistant.
@@ -34,6 +34,10 @@ node scripts/faceclaw-dev-server.mjs
 The fixture runs on loopback port 18790 with synthetic projects, conversations, and responses. It does not load installed configuration, real credentials, or user T3 data. See the [local UI testing instructions](docs/faceclaw.md#local-ui-testing) for connection details and fixture limitations.
 
 The fixture checks application flow. Real speech recognition, model execution, Bluetooth behavior, and Android handoff still require integration testing with the relevant services and hardware. Run `npm run check:all` after runtime changes.
+
+## Pair computer bridges
+
+Install a bridge on each T3 computer, then follow [peer setup and revocation](docs/peers.md). The phone's selected host aggregates paired computers without T3 Connect credentials or an open T3 desktop window. Update the standalone T3 APK to route sessions by their owning environment.
 
 ## Connect Faceclaw
 

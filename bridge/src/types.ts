@@ -7,6 +7,7 @@ export type RuntimeMode =
   | "full-access";
 
 export interface BridgeConfig {
+  readonly peerDirectory?: string;
   readonly signal?: { readonly cliPath: string; readonly dataDirectory: string };
   readonly faceclawProjectId?: string;
   readonly refinementCodexPath?: string;
@@ -194,7 +195,7 @@ export interface T3Descriptor {
   readonly capabilities: Record<string, unknown>;
 }
 
-export type T3EnvironmentKind = "local" | "t3-connect" | "bearer" | "ssh" | "wsl";
+export type T3EnvironmentKind = "local" | "peer" | "t3-connect" | "bearer" | "ssh" | "wsl";
 export type T3EnvironmentStatus = "connected" | "connecting" | "offline" | "error";
 
 /** Public, secret-free environment state exposed by the bridge. */

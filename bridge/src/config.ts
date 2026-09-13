@@ -149,6 +149,8 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): BridgeConfig {
   if (archiveProject && !/^[A-Za-z0-9_-]{1,128}$/.test(archiveProject)) {
     throw new Error("BRIDGE_ARCHIVE_PROJECT_ID is invalid");
   }
+  const peerDirectory = env.BRIDGE_PEER_DIRECTORY?.trim();
+  if (peerDirectory && (!isAbsolute(peerDirectory) || !isLoopback(host))) throw new Error("Peer federation requires an absolute private directory and loopback listener");
   const projectIds = parseProjectIds(env.BRIDGE_PROJECT_IDS);
   const signalCliPath = env.BRIDGE_SIGNAL_CLI_PATH;
   const signalDataDirectory = env.BRIDGE_SIGNAL_DATA_DIR;
@@ -163,6 +165,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): BridgeConfig {
     ...(signalCliPath && signalDataDirectory ? { signal: { cliPath: signalCliPath, dataDirectory: signalDataDirectory } } : {}),
     ...(faceclawProjectId ? { faceclawProjectId } : {}),
     ...(refinementCodexPath ? { refinementCodexPath } : {}),
+    ...(peerDirectory ? { peerDirectory } : {}),
     archive: archiveProject && archiveRoot ? { projectId: archiveProject, workspaceRoot: archiveRoot } : null,
     host,
     port: integer(env, "BRIDGE_PORT", 8787, 1, 65535),

@@ -1,4 +1,5 @@
 import { spawn } from 'node:child_process';
+import { randomUUID } from 'node:crypto';
 import { mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -55,6 +56,9 @@ export class RefinementService {
     if (signal.aborted) throw new ApiError(409, 'refinement_cancelled', 'Refinement was cancelled');
     if (this.active) throw new ApiError(429, 'refinement_busy', 'Another refinement is in progress');
     this.active = true;
+    const requestId = randomUUID().slice(0, 8);
+    let stage = 'prepare';
+    console.info(`[Refinement] start id=${requestId} textChars=${params.text.length} instructionChars=${params.instruction.length}`);
     let directory: string | undefined;
     try {
       directory = await mkdtemp(join(tmpdir(), 'faceclaw-refinement-'));
@@ -66,7 +70,9 @@ export class RefinementService {
       const env: NodeJS.ProcessEnv = { PATH: process.env.PATH, HOME: process.env.HOME, TMPDIR: directory };
       // Auth uses the existing login. Do not pass bridge/T3 tokens or API keys.
       if (process.env.CODEX_HOME) env.CODEX_HOME = process.env.CODEX_HOME;
+      stage = 'isolation';
       await verifyToolFreeExecutable(this.executable, refinementArgs(directory), env, directory, signal);
+      stage = 'generation';
       await new Promise<void>((resolve, reject) => {
         const child = spawn(this.executable!, refinementArgs(directory!), { cwd: directory, env, stdio: ['pipe', 'pipe', 'pipe'], detached: process.platform !== 'win32' });
         let bytes = 0;
@@ -91,6 +97,7 @@ export class RefinementService {
         if (signal.aborted) cancel();
         child.stdin.end(JSON.stringify({ editingInstruction: params.instruction, transcript: params.text }));
       });
+      stage = 'validate-output';
       const output = join(directory, 'output.json');
       if ((await stat(output)).size > 48 * 1024) throw new ApiError(502, 'refinement_output_limit', 'Refinement exceeded its output limit');
       const value: unknown = JSON.parse(await readFile(output, 'utf8'));
@@ -98,8 +105,11 @@ export class RefinementService {
           typeof (value as { text?: unknown }).text !== 'string') throw new ApiError(502, 'refinement_invalid', 'Refinement returned invalid text');
       const text = (value as { text: string }).text.trim();
       if (!text || text.length > 8000 || signal.aborted) throw new ApiError(502, 'refinement_invalid', 'Refinement returned invalid text');
+      console.info(`[Refinement] complete id=${requestId} outputChars=${text.length}`);
       return { text };
     } catch (error) {
+      const code = error instanceof ApiError ? error.code : 'refinement_failed';
+      console.warn(`[Refinement] failed id=${requestId} stage=${stage} code=${code}`);
       if (error instanceof ApiError) throw error;
       throw new ApiError(502, 'refinement_failed', 'Refinement failed; the original draft is unchanged');
     } finally {

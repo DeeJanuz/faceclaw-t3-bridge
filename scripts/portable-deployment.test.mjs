@@ -47,6 +47,21 @@ test('configuration enforces authenticated private defaults and endpoint output 
   assert.equal(env.BRIDGE_RUNTIME_MODE, 'approval-required');
   assert.deepEqual(connectionInfo(config), { evenHubBridgeUrl: 'wss://computer.example.ts.net:8443/v1/events', androidBridgeUrl: 'https://computer.example.ts.net:8443' });
 });
+test('portable installation carries the explicit Codex path into the isolated refinement environment', () => {
+  const config = {
+    bridgePort: 8787, host: 'computer.example.ts.net', httpsPort: 8443,
+    t3BaseDir: '/home/test/.t3', t3Executable: '/opt/t3/node', t3Entry: '/opt/t3/bin.mjs',
+    whisperModel: '/home/test/model.bin', refinementCodexPath: '/home/test/bin/codex',
+  };
+  assert.equal(bridgeEnvironment(config).BRIDGE_REFINEMENT_CODEX_PATH, config.refinementCodexPath);
+  const parsed = parseArguments([
+    '--t3-executable', config.t3Executable, '--t3-entry', config.t3Entry,
+    '--refinement-codex-path', config.refinementCodexPath,
+    '--whisper-executable', '/opt/whisper', '--whisper-model', config.whisperModel,
+    '--tailscale-executable', '/opt/tailscale',
+  ]);
+  assert.equal(parsed.refinementCodexPath, config.refinementCodexPath);
+});
 test('installer rejects missing prerequisites, unknown flags and duplicate ports without side effects', () => {
   assert.throws(() => parseArguments(['--token', 'secret']));
   assert.throws(() => parseArguments(['--dry-run']));

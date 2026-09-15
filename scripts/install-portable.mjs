@@ -38,7 +38,7 @@ async function freePort(port) {
 }
 export function parseArguments(argv) {
   const options = { httpsPort: 8443, bridgePort: 8787, t3BaseUrl: 'http://127.0.0.1:3773', t3BaseDir: path.join(homedir(), '.t3'), dryRun: false };
-  const values = { '--https-port': 'httpsPort', '--bridge-port': 'bridgePort', '--t3-url': 't3BaseUrl', '--t3-base-dir': 't3BaseDir', '--t3-executable': 't3Executable', '--t3-entry': 't3Entry', '--whisper-executable': 'whisperExecutable', '--whisper-model': 'whisperModel', '--tailscale-executable': 'tailscaleExecutable' };
+  const values = { '--https-port': 'httpsPort', '--bridge-port': 'bridgePort', '--t3-url': 't3BaseUrl', '--t3-base-dir': 't3BaseDir', '--t3-executable': 't3Executable', '--t3-entry': 't3Entry', '--refinement-codex-path': 'refinementCodexPath', '--whisper-executable': 'whisperExecutable', '--whisper-model': 'whisperModel', '--tailscale-executable': 'tailscaleExecutable' };
   for (let i = 0; i < argv.length; i++) {
     if (argv[i] === '--dry-run') { options.dryRun = true; continue; }
     const key = values[argv[i]];
@@ -48,7 +48,8 @@ export function parseArguments(argv) {
   options.httpsPort = validatePort(options.httpsPort); options.bridgePort = validatePort(options.bridgePort);
   if (options.httpsPort === options.bridgePort) throw new Error('Bridge and HTTPS ports must differ');
   options.t3BaseUrl = loopbackT3Url(options.t3BaseUrl);
-  for (const key of ['t3Executable', 't3Entry', 't3BaseDir', 'whisperExecutable', 'whisperModel', 'tailscaleExecutable']) {
+  for (const key of ['t3Executable', 't3Entry', 't3BaseDir', 'whisperExecutable', 'whisperModel', 'tailscaleExecutable', 'refinementCodexPath']) {
+    if (key === 'refinementCodexPath' && !options[key]) continue;
     if (!options[key]) throw new Error(`Missing ${key}; the installation skill must discover the installed prerequisite first`);
     cleanPath(options[key]);
   }
@@ -60,6 +61,8 @@ First install for Windows/Linux; use scripts/install.sh on macOS.
 Required absolute paths:
   --t3-executable PATH       Existing T3 Electron executable or Node executable
   --t3-entry PATH            Existing T3 server bin.mjs (including app.asar path)
+  --refinement-codex-path PATH
+                              Codex CLI used for optional Luna refinement
   --whisper-executable PATH  Installed whisper-server executable
   --whisper-model PATH       Verified ggml-base.en.bin
   --tailscale-executable PATH Installed Tailscale executable
@@ -88,6 +91,7 @@ export async function main(argv = process.argv.slice(2)) {
     return;
   }
   for (const key of ['t3Executable', 't3BaseDir', 'whisperExecutable', 'whisperModel', 'tailscaleExecutable']) await access(options[key]);
+  if (options.refinementCodexPath) await access(options.refinementCodexPath);
   options.t3Entry = await resolveT3Entry(options.t3Entry);
   await access(path.join(repo, 'bridge', 'dist', 'src', 'runtime.js'));
   const compiled = await import(pathToFileURL(path.join(repo, 'bridge', 'dist', 'src', 'config.js')).href);

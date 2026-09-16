@@ -28,7 +28,7 @@ function fixture(environmentId: string) {
     descriptor: async () => ({ environmentId, label: environmentId, serverVersion: 'test', capabilities: { threadSettlement: true } }),
     shell: async () => shell, thread: async () => ({ snapshotSequence: 1, thread }),
     threadPage: async () => ({ snapshotSequence: 1, thread }), modelCatalog: async () => ({ providers: [] }),
-    startSession: action('startSession'), sendMessage: action('sendMessage'), steerMessage: action('steerMessage'),
+    startSession: action('startSession'), sendMessage: action('sendMessage'), steerMessage: action('steerMessage'), replyMessage: action('replyMessage'),
     settleThread: action('settleThread'), respondToPlanInput: action('respondToPlanInput'),
     setModel: action('setModel'), setReasoning: action('setReasoning'), approvePlan: action('approvePlan'),
   };
@@ -109,6 +109,42 @@ describe('peer authorization and operations', () => {
 });
 
 describe('three-host peer federation', () => {
+  it('falls back once for an older peer that does not support atomic replies', async () => {
+    const server = new WebSocketServer({ port: 0, host: '127.0.0.1' });
+    await once(server, 'listening');
+    const remote = { bridgeId: 'remote', environmentId: 'remote-env', label: 'Remote', origin: 'https://remote.tail.ts.net', incomingHash: peerHash(peerSecret()), outgoingToken: peerSecret(), state: 'paired' as const, transactionId: 'test' };
+    const local = { bridgeId: 'local', environmentId: 'local-env', label: 'Local', origin: 'https://local.tail.ts.net' };
+    const f = fixture('remote-env'), methods: string[] = [];
+    server.on('connection', socket => socket.on('message', raw => {
+      const request = JSON.parse(raw.toString());
+      methods.push(request.method);
+      if (request.method === 'replyMessage') {
+        socket.send(JSON.stringify({ v: 1, id: request.id, ok: false, error: { code: 'method_not_found' } }));
+        return;
+      }
+      if (request.method === 'steerMessage') {
+        socket.send(JSON.stringify({ v: 1, id: request.id, ok: false, error: { code: 'session_not_running' } }));
+        return;
+      }
+      const result = request.method === 'hello' ? { version: 1, ...remote }
+        : request.method === 'shell' ? f.shell : { sequence: 2 };
+      socket.send(JSON.stringify({ v: 1, id: request.id, ok: true, result }));
+    }));
+    const client = new PeerT3Client(remote, local, 65536,
+      (_url, options) => new WebSocket(`ws://127.0.0.1:${(server.address() as AddressInfo).port}`, PEER_PROTOCOL, options));
+    try {
+      assert.deepEqual(await client.replyMessage({ thread: f.thread, text: 'legacy reply' }), { sequence: 2 });
+      const active = { ...f.thread, latestTurn: { turnId: 'turn', state: 'running', requestedAt: at, startedAt: at, completedAt: null },
+        session: { status: 'running', activeTurnId: 'turn', updatedAt: at } } as T3Thread;
+      assert.deepEqual(await client.replyMessage({ thread: active, text: 'changed while sending' }), { sequence: 2 });
+      assert.equal(methods.filter(method => method === 'replyMessage').length, 2);
+      assert.equal(methods.filter(method => method === 'sendMessage').length, 2);
+      assert.equal(methods.filter(method => method === 'steerMessage').length, 1);
+    } finally {
+      client.close(); server.clients.forEach(socket => socket.terminate());
+      await new Promise<void>(resolve => server.close(() => resolve()));
+    }
+  });
   it('does not replay an accepted mutation after disconnect and rejects incompatible handshakes', async () => {
     const server = new WebSocketServer({ port: 0, host: '127.0.0.1' });
     await once(server, 'listening');

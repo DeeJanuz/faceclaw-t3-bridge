@@ -63,7 +63,7 @@ T3's orchestration API is not a stable third-party SDK. Rerun compatibility chec
 
 ## Transcript token usage
 
-Normalized transcripts include `tokenUsage: { contextTokens, totalTokens, updatedAt }`, with nullable values. The bridge reads T3 Code `context-window.updated` activities: latest `usedTokens` supplies context occupancy, and the greatest reported `totalProcessedTokens` supplies cumulative processed usage. It never adds cumulative snapshots or cached/reasoning subtotals. Compaction can reduce context without reducing the displayed total. Providers without the corresponding fields remain unknown. Raw provider payloads are not forwarded.
+Normalized transcripts include `tokenUsage: { contextTokens, contextWindowTokens, totalTokens, updatedAt }`, with nullable values. The bridge reads T3 Code `context-window.updated` activities: the latest `usedTokens` and `maxTokens` supply context occupancy and capacity, and the greatest reported `totalProcessedTokens` supplies cumulative processed usage. It never adds cumulative snapshots or cached/reasoning subtotals. Compaction can reduce context without reducing the displayed total. Providers without the corresponding fields remain unknown. Raw provider payloads are not forwarded.
 
 The source contract was checked against T3 Code commit `8ea52c8f2f4361e875d72ab30d72d37cfae4d87f` (`providerRuntime.ts`, `CodexAdapter.ts`, `ClaudeAdapter.ts`). Deploy the rebuilt bridge with the matching T3 APK to enable its CTX/TOTAL header.
 

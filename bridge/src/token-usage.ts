@@ -2,6 +2,7 @@ import type { T3ThreadActivity } from "./types.js";
 
 export interface SessionTokenUsage {
   readonly contextTokens: number | null;
+  readonly contextWindowTokens: number | null;
   readonly totalTokens: number | null;
   readonly updatedAt: string | null;
 }
@@ -19,10 +20,11 @@ function tokenCount(value: unknown): number | null {
  */
 export function normalizeTokenUsage(activities: readonly T3ThreadActivity[] | undefined): SessionTokenUsage {
   let contextTokens: number | null = null;
+  let contextWindowTokens: number | null = null;
   let totalTokens: number | null = null;
   let updatedAt: string | null = null;
   let latest = -Infinity;
-  if (!Array.isArray(activities)) return { contextTokens, totalTokens, updatedAt };
+  if (!Array.isArray(activities)) return { contextTokens, contextWindowTokens, totalTokens, updatedAt };
   for (const activity of activities) {
     if (!activity || activity.kind !== "context-window.updated" ||
         typeof activity.createdAt !== "string" || activity.createdAt.length > 40) continue;
@@ -37,8 +39,10 @@ export function normalizeTokenUsage(activities: readonly T3ThreadActivity[] | un
     if (time >= latest) {
       latest = time;
       contextTokens = used;
+      const max = tokenCount(payload.maxTokens);
+      contextWindowTokens = max !== null && max > 0 ? max : null;
       updatedAt = activity.createdAt;
     }
   }
-  return { contextTokens, totalTokens, updatedAt };
+  return { contextTokens, contextWindowTokens, totalTokens, updatedAt };
 }

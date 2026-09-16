@@ -126,6 +126,28 @@ export class PeerT3Client implements T3Client {
   startSession(p: Parameters<T3Client['startSession']>[0]) { return this.mutate('startSession', { projectId: p.project.id, threadId: p.threadId, text: p.text, selection: p.selection }); }
   sendMessage(p: Parameters<T3Client['sendMessage']>[0]) { return this.mutate('sendMessage', { threadId: p.thread.id, text: p.text, interactionMode: p.interactionMode, reasoningId: p.reasoningId }); }
   steerMessage(p: Parameters<T3Client['steerMessage']>[0]) { return this.mutate('steerMessage', { threadId: p.thread.id, text: p.text }); }
+  async replyMessage(p: Parameters<T3Client['replyMessage']>[0]) {
+    const params = { threadId: p.thread.id, text: p.text };
+    try { return await this.mutate('replyMessage', params); }
+    catch (error) {
+      // Older paired bridges predate the atomic reply operation. Their
+      // method_not_found response proves that nothing was dispatched, so a
+      // legacy send/steer fallback is safe. Never retry an uncertain result.
+      if (!(error instanceof ApiError) || error.code !== 'method_not_found') throw error;
+    }
+    const active = ['running', 'starting'].includes(p.thread.session?.status ?? '') ||
+      p.thread.session?.activeTurnId != null || p.thread.latestTurn?.state === 'running';
+    const first = active ? 'steerMessage' : 'sendMessage';
+    const second = active ? 'sendMessage' : 'steerMessage';
+    try { return await this.mutate(first, params); }
+    catch (error) {
+      const stateChanged = error instanceof ApiError &&
+        ((first === 'steerMessage' && error.code === 'session_not_running') ||
+         (first === 'sendMessage' && error.code === 'session_busy'));
+      if (!stateChanged) throw error;
+      return this.mutate(second, params);
+    }
+  }
   settleThread(threadId: string) { return this.mutate('settleThread', { threadId }); }
   respondToPlanInput(p: Parameters<T3Client['respondToPlanInput']>[0]) { return this.mutate('respondToPlanInput', p); }
   setModel(p: Parameters<NonNullable<T3Client['setModel']>>[0]) { return this.mutate('setModel', { threadId: p.thread.id, selection: p.selection, expectedModel: { instanceId: p.thread.modelSelection.instanceId, model: p.thread.modelSelection.model } }); }

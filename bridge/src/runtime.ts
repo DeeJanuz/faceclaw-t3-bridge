@@ -57,6 +57,7 @@ export class RecoveringT3Client implements T3Client {
   async startSession(input: Parameters<T3Client['startSession']>[0]) { return this.ready().startSession(input); }
   async sendMessage(input: Parameters<T3Client['sendMessage']>[0]) { return this.ready().sendMessage(input); }
   async steerMessage(input: Parameters<T3Client['steerMessage']>[0]) { return this.ready().steerMessage(input); }
+  async replyMessage(input: Parameters<T3Client['replyMessage']>[0]) { return this.ready().replyMessage(input); }
   async settleThread(id: string) { return this.ready().settleThread(id); }
   async respondToPlanInput(input: Parameters<T3Client['respondToPlanInput']>[0]) { return this.ready().respondToPlanInput(input); }
 }

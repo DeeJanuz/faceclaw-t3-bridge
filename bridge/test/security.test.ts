@@ -194,7 +194,7 @@ class FakeT3Client implements T3Client {
 
   async thread(threadId: string): Promise<T3ThreadSnapshot> {
     return {
-      ...snapshot(shell.threads.find((value) => value.id === threadId) ?? shell.threads[0]),
+      ...snapshot(this.shellSnapshot.threads.find((value) => value.id === threadId) ?? this.shellSnapshot.threads[0]),
       snapshotSequence: this.threadSequence,
     };
   }
@@ -252,6 +252,11 @@ class FakeT3Client implements T3Client {
   }): Promise<{ sequence: number }> {
     this.steers.push(input);
     return { sequence: 9 };
+  }
+  replies: Array<{ thread: T3ThreadShell; text: string }> = [];
+  async replyMessage(input: { thread: T3ThreadShell; text: string }): Promise<{ sequence: number }> {
+    this.replies.push(input);
+    return { sequence: 10 };
   }
 }
 
@@ -1981,6 +1986,52 @@ describe("WebSocket RPC and voice boundary", () => {
     assert.equal(client.steers.length, 0);
     assert.equal(client.sends.length, 0);
     socket.close();
+  });
+
+  it("reviews a reply against the live thread and accepts both active and newly idle sessions", async () => {
+    for (const status of ["running", "idle"] as const) {
+      const candidate = {
+        ...thread(`reply-${status}`, "2026-09-04T15:00:00.000Z"),
+        session: status === "running" ? {
+          status: "running",
+          activeTurnId: "turn-active",
+          updatedAt: "2026-09-04T15:00:00.000Z",
+        } : null,
+      };
+      const client = new FakeT3Client({ ...shell, threads: [...shell.threads, candidate] });
+      const { base } = await startServer(client);
+      const socket = await openSocket(base);
+      const response = await rpc(socket, `reply-${status}`, "turn.reply", {
+        threadId: candidate.id,
+        text: `Reviewed while ${status}`,
+      });
+      assert.equal(response.ok, true);
+      assert.deepEqual(response.result, {
+        threadId: candidate.id,
+        text: `Reviewed while ${status}`,
+        sequence: 10,
+      });
+      assert.equal(client.replies.length, 1);
+      assert.equal(client.replies[0]?.thread.id, candidate.id);
+      assert.equal(client.replies[0]?.text, `Reviewed while ${status}`);
+      socket.terminate();
+    }
+  });
+
+  it("rejects a reviewed reply for a missing or archived session without dispatch", async () => {
+    for (const candidate of [
+      { ...thread("missing", "2026-09-04T15:00:00.000Z") },
+      { ...thread("archived", "2026-09-04T15:00:00.000Z"), archivedAt: "2026-09-04T15:00:00.000Z" },
+    ]) {
+      const client = new FakeT3Client({ ...shell, threads: candidate.id === "missing" ? shell.threads : [...shell.threads, candidate] });
+      const { base } = await startServer(client);
+      const socket = await openSocket(base);
+      const response = await rpc(socket, `missing-${candidate.id}`, "turn.reply", { threadId: candidate.id, text: "Do not send" });
+      assert.equal(response.ok, false);
+      assert.equal((response.error as { code: string }).code, "not_found");
+      assert.equal(client.replies.length, 0);
+      socket.terminate();
+    }
   });
 
   it("rejects malformed steering input before reading or writing T3 state", async () => {

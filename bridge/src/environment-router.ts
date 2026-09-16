@@ -204,6 +204,7 @@ export class PrimaryEnvironmentClient implements T3Client {
   async startSession(input: Parameters<T3Client["startSession"]>[0]) { return (await this.client()).startSession(input); }
   async sendMessage(input: Parameters<T3Client["sendMessage"]>[0]) { return (await this.client()).sendMessage(input); }
   async steerMessage(input: Parameters<T3Client["steerMessage"]>[0]) { return (await this.client()).steerMessage(input); }
+  async replyMessage(input: Parameters<T3Client["replyMessage"]>[0]) { return (await this.client()).replyMessage(input); }
   async settleThread(id: string) { return (await this.client()).settleThread(id); }
   async respondToPlanInput(input: Parameters<T3Client["respondToPlanInput"]>[0]) { return (await this.client()).respondToPlanInput(input); }
   async setModel(input: Parameters<NonNullable<T3Client["setModel"]>>[0]) {

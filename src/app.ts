@@ -122,6 +122,8 @@ interface VoiceDraftState {
   text: string
   pages: string[]
   page: number
+  /** A mutation may have been accepted even when its acknowledgement/readback was lost. */
+  sendOutcome: 'ready' | 'unknown'
 }
 
 interface AssistantOrigin {
@@ -1144,6 +1146,11 @@ export class EvenT3App {
       ...(environmentId ? { environmentId } : {}), threadId,
     })
     if (generation !== this.endpointGeneration || this.closed) return
+    if (!result?.session || result.session.id !== threadId ||
+        (environmentId !== undefined && result.session.environmentId !== environmentId) ||
+        (result.environmentId !== undefined && environmentId !== undefined && result.environmentId !== environmentId)) {
+      throw new Error('T3_INVALID_RESPONSE')
+    }
     result.pendingPlanInput = parsePendingPlanInput(result.pendingPlanInput)
     this.transcript = result
     this.transcriptPages = paginateTranscriptWithLiveTurn(
@@ -1546,6 +1553,7 @@ export class EvenT3App {
           { width: DASHBOARD_READER_BOX.width, height: dictation.target.kind === 'phone' ? 162 : 189 },
         ),
         page: 0,
+        sendOutcome: 'ready',
       }
       this.screen = 'draft'
       await this.renderVoiceDraft()
@@ -1569,6 +1577,10 @@ export class EvenT3App {
   private async sendVoiceDraft(): Promise<void> {
     const draft = this.voiceDraft
     if (!draft) return
+    if (draft.sendOutcome === 'unknown') {
+      await this.showError('Send status unknown. Check the thread before trying again.', 'transcript')
+      return
+    }
     if (!draft.text.trim()) {
       this.voiceDraft = null
       this.voiceBackgroundFrame = null
@@ -1602,10 +1614,8 @@ export class EvenT3App {
           ? this.transcript?.turns.flatMap((turn) => turn.messages.map((message) => message.id)) ?? []
           : [],
       )
-      const sessionWorking = draft.target.kind === 'thread'
-        && ['running', 'starting'].includes(this.transcript?.session.status ?? '')
       const result = draft.target.kind === 'thread'
-        ? await client.request(sessionWorking ? 'turn.steer' : 'turn.send', {
+        ? await client.request('turn.reply', {
             ...environmentParameter(draft.target),
             threadId: draft.target.threadId,
             text: draft.text,
@@ -1617,16 +1627,32 @@ export class EvenT3App {
             text: draft.text,
           })
       if (generation !== this.endpointGeneration) return
+      if (!result || typeof result.threadId !== 'string' || result.threadId.length === 0 ||
+          (draft.target.kind === 'thread' && result.threadId !== draft.target.threadId) ||
+          (draft.target.environmentId !== undefined && result.environmentId !== draft.target.environmentId)) {
+        throw new Error('T3_INVALID_RESPONSE')
+      }
+      await this.openTranscript(result.threadId, true, false, result.environmentId ?? draft.target.environmentId)
+      if (generation !== this.endpointGeneration) return
       this.voiceDraft = null
       this.voiceBackgroundFrame = null
-      await this.openTranscript(result.threadId, true, false, result.environmentId ?? draft.target.environmentId)
     } catch (error) {
       if (generation !== this.endpointGeneration) return
       this.responseBaselineMessageIds = null
       const message = draft.target.kind === 'assistant' && error instanceof BridgeRequestError && error.code === 'method_not_found'
         ? 'Update the Mac bridge to create full-access assistant sessions. Your draft has been kept.'
         : errorMessage(error)
-      await this.showError(`Send failed\n\n${message}`, 'draft')
+      const definite = error instanceof BridgeRequestError && [
+        'invalid_request', 'invalid_message', 'request_too_large', 'rate_limited', 'unauthorized',
+        'origin_denied', 'native_only', 'not_found', 'method_not_found', 'session_busy', 'session_not_running',
+        'project_model_required', 'model_selection_changed', 'plan_unavailable',
+      ].includes(error.code)
+      if (!definite) {
+        draft.sendOutcome = 'unknown'
+        await this.showError('Send status unknown. Check the thread before trying again.', 'transcript')
+      } else {
+        await this.showError(`Send failed\n\n${message}`, 'draft')
+      }
     }
   }
 

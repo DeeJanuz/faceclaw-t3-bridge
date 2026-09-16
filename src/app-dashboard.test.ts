@@ -41,7 +41,8 @@ function setup(modules: readonly DashboardModule[] = []) {
       case 'thread.settle': return { threadId: params?.threadId, settled: true, sequence: 2 }
       case 'thread.start':
       case 'assistant.start': return { threadId: 'assistant-thread', text: params?.text, sequence: 1 }
-      case 'turn.send': return { threadId: 'assistant-thread', text: params?.text, sequence: 2 }
+      case 'turn.send':
+      case 'turn.reply': return { threadId: 'assistant-thread', text: params?.text, sequence: 2 }
       case 'transcript.get': return transcript(String(params?.threadId))
       default: throw new Error(`Unexpected method ${method}`)
     }
@@ -558,10 +559,37 @@ describe('dashboard and assistant app flow', () => {
     await state.handleTap()
     await state.handleTap()
     await state.handleTap()
-    expect(request.mock.calls.filter(([method]) => method === 'turn.send')).toHaveLength(1)
+    expect(request.mock.calls.filter(([method]) => method === 'turn.reply')).toHaveLength(1)
     expect(request.mock.calls.filter(([method]) => method === 'assistant.start')).toHaveLength(1)
     await state.handleDoubleTap()
     expect(state.screen).toBe('dashboard')
+  })
+  it('routes a reviewed reply through the selected remote environment and validates the readback identity', async () => {
+    const { state, request } = setup()
+    const target = { kind: 'thread', threadId: 'remote-thread', environmentId: 'remote' as const }
+    state.screen = 'draft'
+    state.voiceDraft = { target, returnScreen: 'transcript', text: 'Remote reply', pages: ['Remote reply'], page: 0, sendOutcome: 'ready' }
+    request.mockImplementation(async (method: string, params?: Record<string, unknown>): Promise<unknown> => {
+      if (method === 'turn.reply') return { threadId: 'remote-thread', environmentId: 'remote', text: params?.text, sequence: 3 }
+      if (method === 'transcript.get') return { ...transcript('remote-thread'), environmentId: 'remote', session: { ...transcript('remote-thread').session, environmentId: 'remote' } }
+      throw new Error(`Unexpected method ${method}`)
+    })
+    await state.sendVoiceDraft()
+    expect(request).toHaveBeenCalledWith('turn.reply', { environmentId: 'remote', threadId: 'remote-thread', text: 'Remote reply' })
+    expect(state.voiceDraft).toBeNull()
+
+    state.screen = 'draft'
+    state.voiceDraft = { target, returnScreen: 'transcript', text: 'Second reply', pages: ['Second reply'], page: 0, sendOutcome: 'ready' }
+    request.mockImplementation(async (method: string, params?: Record<string, unknown>): Promise<unknown> => {
+      if (method === 'turn.reply') return { threadId: 'remote-thread', environmentId: 'remote', text: params?.text, sequence: 4 }
+      if (method === 'transcript.get') return { ...transcript('wrong-thread'), environmentId: 'remote', session: { ...transcript('wrong-thread').session, environmentId: 'remote' } }
+      throw new Error(`Unexpected method ${method}`)
+    })
+    await state.sendVoiceDraft()
+    expect(state.voiceDraft.sendOutcome).toBe('unknown')
+    const replies = request.mock.calls.filter(([method]) => method === 'turn.reply').length
+    await state.sendVoiceDraft()
+    expect(request.mock.calls.filter(([method]) => method === 'turn.reply')).toHaveLength(replies)
   })
   it('keeps the assistant draft on an older bridge and never downgrades to ordinary creation', async () => {
     const { state, request } = setup()

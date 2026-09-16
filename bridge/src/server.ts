@@ -650,6 +650,23 @@ async function steerTurn(
   return { threadId, text, sequence: result.sequence };
 }
 
+async function replyTurn(
+  client: T3Client,
+  config: BridgeConfig,
+  threadId: string,
+  text: string,
+) {
+  const thread = await freshAllowedThread(client, config, threadId);
+  const status = thread.session?.status ?? "idle";
+  const active = ["running", "starting"].includes(status) ||
+    thread.session?.activeTurnId != null || thread.latestTurn?.state === "running";
+  const idle = ["idle", "ready", "interrupted", "stopped", "error"].includes(status) &&
+    thread.session?.activeTurnId == null && thread.latestTurn?.state !== "running";
+  if (!active && !idle) throw new ApiError(502, "upstream_invalid_response", "T3 Code returned an invalid session state");
+  const result = await client.replyMessage({ thread, text });
+  return { threadId, text, sequence: result.sequence };
+}
+
 function requireSettleableThread(thread: T3ThreadShell): void {
   const status = thread.session === null ? "idle" : thread.session?.status;
   if (status === "running" || status === "starting" ||
@@ -812,6 +829,15 @@ async function routeRpc(
       const resolved = await router.resolve(requestedEnvironmentId(request.params));
       const threadId = requiredId(request.params, "threadId");
       const result = await steerTurn(resolved.client, config, threadId, parseText(request.params, config.maxTextChars));
+      return aggregateMode ? withEnvironment(result, resolved.environment) : result;
+    }
+    case "turn.reply": {
+      if (Object.keys(request.params).some((key) => !["environmentId", "threadId", "text"].includes(key))) {
+        throw new ApiError(400, "invalid_request", "Invalid reviewed reply");
+      }
+      const resolved = await router.resolve(requestedEnvironmentId(request.params));
+      const threadId = requiredId(request.params, "threadId");
+      const result = await replyTurn(resolved.client, config, threadId, parseText(request.params, config.maxTextChars));
       return aggregateMode ? withEnvironment(result, resolved.environment) : result;
     }
     case "voice.start": {

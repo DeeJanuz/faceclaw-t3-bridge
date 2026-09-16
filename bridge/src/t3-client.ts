@@ -654,6 +654,24 @@ export class HttpT3Client implements T3Client {
     });
   }
 
+  async replyMessage(input: {
+    readonly thread: T3ThreadShell;
+    readonly text: string;
+  }): Promise<{ readonly sequence: number }> {
+    // T3 accepts thread.turn.start for both a reply after a completed turn
+    // and a message steered into an active turn. The bridge validates once
+    // before this dispatch and never retries an ambiguous outcome.
+    return this.dispatch({
+      type: "thread.turn.start",
+      commandId: randomUUID(),
+      threadId: input.thread.id,
+      message: { messageId: randomUUID(), role: "user", text: input.text, attachments: [] },
+      runtimeMode: input.thread.runtimeMode,
+      interactionMode: input.thread.interactionMode,
+      createdAt: new Date().toISOString(),
+    });
+  }
+
   async settleThread(threadId: string): Promise<{ readonly sequence: number }> {
     // T3 enforces running/queued-turn and blocking-request checks atomically.
     // Do not replace this command with a metadata write or auto-settlement.

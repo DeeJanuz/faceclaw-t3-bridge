@@ -47,7 +47,7 @@ export async function peerOperation(client: T3Client, config: BridgeConfig, meth
   }
   const keys: Record<string, string[]> = {
     thread: [], threadPage: ['beforeCursor'], settleThread: [],
-    sendMessage: ['text', 'interactionMode', 'reasoningId'], steerMessage: ['text'],
+    sendMessage: ['text', 'interactionMode', 'reasoningId'], steerMessage: ['text'], replyMessage: ['text'],
     setModel: ['selection', 'expectedModel'], setReasoning: ['reasoningId', 'expectedModel'],
     approvePlan: ['planId', 'planMarkdown', 'commandId'],
     respondToPlanInput: ['requestId', 'commandId', 'answers'],
@@ -69,6 +69,14 @@ export async function peerOperation(client: T3Client, config: BridgeConfig, meth
     }
     return client.steerMessage({ thread, text: text(p.text, config.maxTextChars) });
   }
+  if (method === 'replyMessage') {
+    const status = thread.session?.status ?? 'idle';
+    const active = ['running', 'starting'].includes(status) || thread.session?.activeTurnId != null || thread.latestTurn?.state === 'running';
+    const idle = ['idle', 'ready', 'interrupted', 'stopped', 'error'].includes(status) &&
+      thread.session?.activeTurnId == null && thread.latestTurn?.state !== 'running';
+    if (!active && !idle) throw new ApiError(502, 'upstream_invalid_response', 'T3 Code returned an invalid session state');
+    return client.replyMessage({ thread, text: text(p.text, config.maxTextChars) });
+  }
   if (method === 'respondToPlanInput') {
     const pending = normalizePendingPlanInput(thread);
     if (!pending || pending.requestId !== p.requestId) throw new ApiError(409, 'plan_unavailable', 'Questions are no longer available');
@@ -83,7 +91,7 @@ export async function peerOperation(client: T3Client, config: BridgeConfig, meth
     }), pending, config.maxTextChars);
     return client.respondToPlanInput({ threadId, requestId: pending.requestId, commandId: id(p.commandId), answers: canonical });
   }
-  requireIdleSession(thread);
+  if (method !== 'replyMessage') requireIdleSession(thread);
   if (method === 'settleThread') return client.settleThread(threadId);
   if (method === 'sendMessage') {
     if (p.interactionMode !== undefined && !['default', 'plan'].includes(String(p.interactionMode))) throw invalid();

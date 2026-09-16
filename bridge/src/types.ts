@@ -261,6 +261,10 @@ export interface T3Client {
     readonly thread: T3ThreadShell;
     readonly text: string;
   }): Promise<{ readonly sequence: number }>;
+  replyMessage(input: {
+    readonly thread: T3ThreadShell;
+    readonly text: string;
+  }): Promise<{ readonly sequence: number }>;
 }
 
 export interface Transcriber {

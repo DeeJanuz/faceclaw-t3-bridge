@@ -210,7 +210,7 @@ describe('plan questions in a thread', () => {
     expect(state.planFlow.questionIndex).toBe(before)
   })
 
-  it('accepts custom dictation locally and never routes it to thread.start, turn.send, or turn.steer', async () => {
+  it('accepts custom dictation locally and never routes it to thread.start, turn.send, turn.steer, or turn.reply', async () => {
     const { state, request } = setup()
     await openReady(state)
     await state.handleTap()

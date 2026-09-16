@@ -46,6 +46,7 @@ class EnvironmentClient implements T3Client {
   }
   async sendMessage() { this.sends++; return { sequence: this.sequence }; }
   async steerMessage() { return { sequence: this.sequence }; }
+  async replyMessage() { this.sends++; return { sequence: this.sequence }; }
   async settleThread() { return { sequence: this.sequence }; }
   async respondToPlanInput() { return { sequence: this.sequence }; }
 }
@@ -107,6 +108,13 @@ describe("multi-environment bridge protocol", () => {
       assert.equal(sent.ok, true);
       assert.equal((sent.result as { environmentId: string }).environmentId, "remote");
       assert.equal(remote.sends, 1);
+      assert.equal(local.sends, 0);
+
+      const reply = await rpc(socket, "remote-reply", "turn.reply",
+        { environmentId: "remote", threadId: "shared-thread", text: "reviewed hello" });
+      assert.equal(reply.ok, true);
+      assert.equal((reply.result as { environmentId: string }).environmentId, "remote");
+      assert.equal(remote.sends, 2);
       assert.equal(local.sends, 0);
     } finally {
       socket.terminate();

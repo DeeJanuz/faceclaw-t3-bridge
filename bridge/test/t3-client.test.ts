@@ -245,6 +245,7 @@ describe("HttpT3Client session creation", () => {
       type: "thread.turn.start",
       commandId: commands[1]!.commandId,
       threadId: "thread-1",
+      modelSelection: commands[0]!.modelSelection,
       message: {
         messageId: (commands[1]!.message as Record<string, unknown>).messageId,
         role: "user",
@@ -763,7 +764,30 @@ describe("HttpT3Client session controls installed contract", () => {
     assert.equal(commands[0]!.interactionMode, "plan");
     assert.equal(commands[1]!.runtimeMode, "approval-required");
     assert.equal(commands[1]!.interactionMode, "plan");
+    assert.deepEqual(commands[1]!.modelSelection, thread.modelSelection);
     assert.equal("runtimeMode" in commands[0]!, false);
+  });
+  it("uses the post-update reasoning selection on the next provider turn", async () => {
+    const commands: Record<string, unknown>[] = [];
+    const selected = { ...thread.modelSelection, options: [
+      { id: "serviceTier", value: "fast" }, { id: "other", value: true }, { id: "reasoningEffort", value: "high" }] };
+    let metadataUpdated = false;
+    const base = await startUpstream(async (request, response) => {
+      if (request.method === "GET") {
+        response.writeHead(200, { "Content-Type": "application/json" });
+        response.end(JSON.stringify({ snapshotSequence: 2, thread: { ...thread,
+          modelSelection: metadataUpdated ? selected : thread.modelSelection, messages: [] } }));
+        return;
+      }
+      const command = await readBody(request);
+      commands.push(command);
+      if (command.type === "thread.meta.update") metadataUpdated = true;
+      response.writeHead(200, { "Content-Type": "application/json" });
+      response.end(JSON.stringify({ sequence: commands.length }));
+    });
+    await new HttpT3Client(config(base)).sendMessage({ thread, text: "Use more reasoning", reasoningId: "high" });
+    assert.deepEqual(commands.map(command => command.type), ["thread.meta.update", "thread.turn.start"]);
+    assert.deepEqual(commands[1]!.modelSelection, selected);
   });
   it("stops after rejected mode changes and does not retry failed turn starts", async () => {
     for (const failureIndex of [1, 2]) {
@@ -793,6 +817,33 @@ describe("HttpT3Client session controls installed contract", () => {
     await assert.rejects(client.setReasoning({ thread, reasoningId: "invented" }), { code: "reasoning_selection_unavailable" });
     assert.equal(catalogs, 2); assert.equal(commands.length, 1);
   });
+  it("stops an idle provider session after a model-selection change before the next fresh turn", async () => {
+    const commands: Record<string, unknown>[] = [];
+    let stopped = false;
+    const activeThread = { ...thread, session: { status: "ready", activeTurnId: null, updatedAt: thread.updatedAt } };
+    const base = await startUpstream(async (request, response) => {
+      if (request.method === "GET") {
+        response.writeHead(200, { "Content-Type": "application/json" });
+        response.end(JSON.stringify({ snapshotSequence: 2, thread: { ...activeThread,
+          session: stopped ? { status: "stopped", activeTurnId: null, updatedAt: thread.updatedAt } : activeThread.session,
+          messages: [] } }));
+        return;
+      }
+      const command = await readBody(request);
+      commands.push(command);
+      if (command.type === "thread.session.stop") stopped = true;
+      response.writeHead(200, { "Content-Type": "application/json" });
+      response.end(JSON.stringify({ sequence: commands.length }));
+    });
+    const result = await new HttpT3Client(config(base)).setModel({
+      thread: activeThread,
+      selection: { instanceId: "codex", model: "gpt-5.6-sol", reasoningId: "high" },
+    });
+    assert.deepEqual(commands.map(command => command.type), ["thread.meta.update", "thread.session.stop"]);
+    assert.deepEqual(commands[0]!.modelSelection, { instanceId: "codex", model: "gpt-5.6-sol", options: [
+      { id: "reasoningEffort", value: "high" }, { id: "serviceTier", value: "default" }] });
+    assert.equal(result.sequence, 2);
+  });
   it("refuses a model or active-turn change during reasoning catalog lookup", async () => {
     for (const changed of [{ ...thread, modelSelection: { ...thread.modelSelection, model: "changed" } },
       { ...thread, session: { status: "running", activeTurnId: "active", updatedAt: thread.updatedAt } }]) {
@@ -815,6 +866,7 @@ describe("HttpT3Client session controls installed contract", () => {
     assert.equal(commands[0]!.commandId, "even-implement-fixture-mode");
     assert.equal(commands[1]!.commandId, "even-implement-fixture");
     assert.deepEqual(commands[1]!.sourceProposedPlan, { threadId: thread.id, planId: "plan-1" });
+    assert.deepEqual(commands[1]!.modelSelection, thread.modelSelection);
     assert.equal(commands[1]!.runtimeMode, "approval-required");
     assert.equal(commands[1]!.interactionMode, "default");
     assert.equal((commands[1]!.message as Record<string, unknown>).text, "Implement this plan:\n\nExact reviewed text");

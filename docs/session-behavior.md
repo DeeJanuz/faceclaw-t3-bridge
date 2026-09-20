@@ -4,6 +4,12 @@ The New Session project picker follows the bridge's recent-interaction order and
 
 The bridge does not currently receive a last-viewed project signal from T3 Code. Merely opening or reading a project therefore does not change this order.
 
+## Model and reasoning changes
+
+The glasses allow model and reasoning changes only while a conversation is idle. The bridge persists the validated selection in T3 thread metadata, stops the idle provider process, and waits for T3 to confirm the stop. T3 preserves the provider resume cursor, so the conversation history remains available. Every fresh turn created from the glasses includes the complete selected provider, model, reasoning, and unrelated provider options. Steering an already-running turn retains that turn's selection because providers cannot change a turn after it starts.
+
+A confirmed provider/model change starts a new TOTAL interval on the glasses. The unchanged usage snapshot at the selection boundary displays zero; later provider cumulative readings are shown as a delta from that boundary. Changing only reasoning does not reset TOTAL. CTX remains the provider's actual context occupancy and may retain conversation history. If cumulative telemetry is missing or resets without an authoritative generation marker, TOTAL is unknown rather than estimated.
+
 ## Notification dropdowns
 
 New T3 response alerts and tracked phone notifications show a dropdown for ten seconds while the dashboard or a conversation reader is open. Tap before it expires to open the associated T3 thread or phone conversation. Double tap in that reader returns to the interrupted screen and reading position. Further notification visits can be opened and returned from in order.

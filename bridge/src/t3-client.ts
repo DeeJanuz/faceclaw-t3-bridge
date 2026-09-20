@@ -522,6 +522,7 @@ export class HttpT3Client implements T3Client {
       type: "thread.turn.start",
       commandId: randomUUID(),
       threadId: input.threadId,
+      modelSelection,
       message: {
         messageId: randomUUID(),
         role: "user",
@@ -540,7 +541,18 @@ export class HttpT3Client implements T3Client {
     readonly interactionMode?: "default" | "plan";
     readonly reasoningId?: string;
   }): Promise<{ readonly sequence: number }> {
-    if (input.reasoningId !== undefined) await this.setReasoning({ thread: input.thread, reasoningId: input.reasoningId });
+    let modelSelection = input.thread.modelSelection;
+    if (input.reasoningId !== undefined) {
+      await this.setReasoning({ thread: input.thread, reasoningId: input.reasoningId });
+      const current = (await this.thread(input.thread.id)).thread;
+      if (current.id !== input.thread.id || current.projectId !== input.thread.projectId || current.archivedAt !== null ||
+          current.modelSelection.instanceId !== input.thread.modelSelection.instanceId ||
+          current.modelSelection.model !== input.thread.modelSelection.model) {
+        throw new ApiError(409, "model_selection_changed", "The session model changed. Refresh the session.");
+      }
+      requireIdleSession(current);
+      modelSelection = current.modelSelection;
+    }
     const mode = input.interactionMode ?? input.thread.interactionMode;
     if (mode !== input.thread.interactionMode) await this.setInteractionMode(input.thread.id, mode);
     const now = new Date().toISOString();
@@ -548,6 +560,7 @@ export class HttpT3Client implements T3Client {
       type: "thread.turn.start",
       commandId: randomUUID(),
       threadId: input.thread.id,
+      modelSelection,
       message: {
         messageId: randomUUID(),
         role: "user",
@@ -565,6 +578,34 @@ export class HttpT3Client implements T3Client {
     // the turn.start command alone does not switch it.
     return this.dispatch({ type: "thread.interaction-mode.set", commandId, threadId,
       interactionMode, createdAt: new Date().toISOString() });
+  }
+
+  private async activateUpdatedModelSelection(
+    thread: T3ThreadShell,
+    update: { readonly sequence: number },
+  ): Promise<{ readonly sequence: number }> {
+    // T3's Codex adapter applies a complete model selection when the glasses
+    // start a fresh turn. Stop the idle provider as well so its next resume
+    // cannot retain the old model before that turn is dispatched. T3 preserves
+    // the provider cursor, so this does not discard conversation history.
+    if (thread.session === null || thread.session.status === "stopped") return update;
+    const result = await this.dispatch({
+      type: "thread.session.stop",
+      commandId: randomUUID(),
+      threadId: thread.id,
+      createdAt: new Date().toISOString(),
+    });
+    const deadline = Date.now() + this.config.upstreamTimeoutMs;
+    while (Date.now() < deadline) {
+      const current = (await this.thread(thread.id)).thread;
+      if (current.session === null || current.session.status === "stopped") return result;
+      if (["running", "starting"].includes(current.session.status) || current.session.activeTurnId != null ||
+          current.latestTurn?.state === "running") {
+        throw new ApiError(409, "session_busy", "The session became busy while changing its model. Try again when the turn finishes");
+      }
+      await new Promise((resolve) => setTimeout(resolve, 25));
+    }
+    throw new ApiError(502, "upstream_timeout", "T3 Code did not activate the selected model in time");
   }
 
   async setReasoning(input: { readonly thread: T3ThreadShell; readonly reasoningId: string }): Promise<{ readonly sequence: number }> {
@@ -587,8 +628,9 @@ export class HttpT3Client implements T3Client {
     // Preserve provider, model, speed and every unrelated existing option.
     const options = [...(current.modelSelection.options ?? []).filter((option) => option.id !== reasoning.t3OptionId),
       { id: reasoning.t3OptionId, value: input.reasoningId }];
-    return this.dispatch({ type: "thread.meta.update", commandId: randomUUID(), threadId: input.thread.id,
+    const result = await this.dispatch({ type: "thread.meta.update", commandId: randomUUID(), threadId: input.thread.id,
       modelSelection: { ...current.modelSelection, options } });
+    return this.activateUpdatedModelSelection(current, result);
   }
 
   async setModel(input: { readonly thread: T3ThreadShell; readonly selection: T3NewSessionSelection }): Promise<{ readonly sequence: number }> {
@@ -617,13 +659,15 @@ export class HttpT3Client implements T3Client {
       throw new ApiError(409, "model_selection_changed", "The session model changed. Refresh the session.");
     }
     requireIdleSession(current);
-    return this.dispatch({ type: "thread.meta.update", commandId: randomUUID(), threadId: current.id,
+    const result = await this.dispatch({ type: "thread.meta.update", commandId: randomUUID(), threadId: current.id,
       modelSelection: { instanceId: provider.instanceId, model: model.slug, ...(options.length > 0 ? { options } : {}) } });
+    return this.activateUpdatedModelSelection(current, result);
   }
 
   async approvePlan(input: { readonly thread: T3ThreadShell; readonly planId: string; readonly planMarkdown: string; readonly commandId: string }): Promise<{ readonly sequence: number }> {
     await this.setInteractionMode(input.thread.id, "default", `${input.commandId}-mode`);
     return this.dispatch({ type: "thread.turn.start", commandId: input.commandId, threadId: input.thread.id,
+      modelSelection: input.thread.modelSelection,
       message: { messageId: `${input.commandId}-message`, role: "user",
         text: `Implement this plan:\n\n${input.planMarkdown}`, attachments: [] },
       sourceProposedPlan: { threadId: input.thread.id, planId: input.planId },

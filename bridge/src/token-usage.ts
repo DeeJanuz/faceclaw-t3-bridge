@@ -4,6 +4,8 @@ export interface SessionTokenUsage {
   readonly contextTokens: number | null;
   readonly contextWindowTokens: number | null;
   readonly totalTokens: number | null;
+  /** Cumulative counter on the newest context event, before lifetime folding. */
+  readonly latestTotalTokens: number | null;
   readonly updatedAt: string | null;
 }
 
@@ -22,9 +24,10 @@ export function normalizeTokenUsage(activities: readonly T3ThreadActivity[] | un
   let contextTokens: number | null = null;
   let contextWindowTokens: number | null = null;
   let totalTokens: number | null = null;
+  let latestTotalTokens: number | null = null;
   let updatedAt: string | null = null;
   let latest = -Infinity;
-  if (!Array.isArray(activities)) return { contextTokens, contextWindowTokens, totalTokens, updatedAt };
+  if (!Array.isArray(activities)) return { contextTokens, contextWindowTokens, totalTokens, latestTotalTokens, updatedAt };
   for (const activity of activities) {
     if (!activity || activity.kind !== "context-window.updated" ||
         typeof activity.createdAt !== "string" || activity.createdAt.length > 40) continue;
@@ -41,8 +44,9 @@ export function normalizeTokenUsage(activities: readonly T3ThreadActivity[] | un
       contextTokens = used;
       const max = tokenCount(payload.maxTokens);
       contextWindowTokens = max !== null && max > 0 ? max : null;
+      latestTotalTokens = total;
       updatedAt = activity.createdAt;
     }
   }
-  return { contextTokens, contextWindowTokens, totalTokens, updatedAt };
+  return { contextTokens, contextWindowTokens, totalTokens, latestTotalTokens, updatedAt };
 }

@@ -1,5 +1,7 @@
 # Signal service and independent APK
 
+Supported on macOS and Linux only. Windows bridges refuse the Signal settings.
+
 Signal runs as an optional service in this bridge, independent of T3 or an agent provider. The separately installed Signal APK uses Faceclaw for glasses rendering, input, notifications and reviewed dictation. Its credential cannot use the T3, native Faceclaw, phone or owner APIs.
 
 ## Runtime setup

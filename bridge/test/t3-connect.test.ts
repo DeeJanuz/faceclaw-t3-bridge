@@ -50,7 +50,7 @@ function verifiedDpop(headers: Headers, method: string, url: string, token?: str
 }
 
 describe("T3 Connect discovery", () => {
-  it("discovers an account-linked environment and uses DPoP for environment traffic", async () => {
+  it("discovers an account-linked environment and uses DPoP for environment traffic", { skip: process.platform === 'win32' && 'T3 Connect credentials use POSIX owner-only checks' }, async () => {
     const base = await baseDirectory();
     const calls: string[] = [];
     globalThis.fetch = async (input, init = {}) => {
@@ -128,7 +128,7 @@ describe("T3 Connect discovery", () => {
     assert.equal(calls, 0);
   });
 
-  it("refreshes an expired CLI credential with an atomic owner-only replacement", async () => {
+  it("refreshes an expired CLI credential with an atomic owner-only replacement", { skip: process.platform === 'win32' && 'T3 Connect credentials use POSIX owner-only checks' }, async () => {
     const base = await baseDirectory();
     const tokenPath = join(base, "userdata", "secrets", "cloud-cli-oauth-token.bin");
     await writeFile(tokenPath, JSON.stringify({ accessToken: "expired-access", refreshToken: "old-refresh",

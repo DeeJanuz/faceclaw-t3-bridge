@@ -12,6 +12,7 @@ import { loadConfig } from "../src/config.js";
 import { completedTurn, normalizeProjects, normalizeSessions, normalizeTranscript } from "../src/normalize.js";
 import { createBridgeServer } from "../src/server.js";
 import { faceclawToken } from "../src/faceclaw.js";
+import { assertPosixFeature } from "../src/platform-support.js";
 import type {
   BridgeConfig,
   T3Client,
@@ -341,6 +342,13 @@ describe("configuration security", () => {
   it("keeps the listener on loopback", () => {
     assert.equal(loadConfig(baseEnv).host, "127.0.0.1");
     assert.throws(() => loadConfig({ ...baseEnv, BRIDGE_HOST: "0.0.0.0" }), /BRIDGE_HOST must be a loopback address/);
+  });
+
+  it("refuses POSIX-only optional features on Windows instead of running them unprotected", () => {
+    for (const platform of ["win32", "aix", "freebsd"] as const) {
+      assert.throws(() => assertPosixFeature("Peer federation", "BRIDGE_PEER_DIRECTORY", platform), /only on macOS and Linux; leave BRIDGE_PEER_DIRECTORY unset/);
+    }
+    for (const platform of ["darwin", "linux"] as const) assertPosixFeature("Peer federation", "BRIDGE_PEER_DIRECTORY", platform);
   });
 
   it("rejects weak secrets", () => {

@@ -37,7 +37,7 @@ test('provider grants require isolated launcher credential, actual configured pr
   } finally { await rm(dir, { recursive: true, force: true }); }
 });
 
-test('launcher setup preserves existing configs and excludes master token; mode and endpoint checks fail closed', async () => {
+test('launcher setup preserves existing configs and excludes master token; mode and endpoint checks fail closed', { skip: process.platform === 'win32' && 'The provider launcher is supported only on macOS and Linux' }, async () => {
   const dir = await mkdtemp(join(tmpdir(), 'provider-config-'));
   try {
     const env = { BRIDGE_TOKEN: secret, BRIDGE_FACECLAW_PROJECT_ID: 'assistant', FACECLAW_CODEX_PATH: process.execPath, FACECLAW_WORKSPACE_ROOT: dir };
@@ -53,7 +53,7 @@ test('launcher setup preserves existing configs and excludes master token; mode 
   } finally { await rm(dir, { recursive: true, force: true }); }
 });
 
-test('automatic provider launcher injects scoped MCP, relays a tool to authenticated phone, and revokes at exit', async () => {
+test('automatic provider launcher injects scoped MCP, relays a tool to authenticated phone, and revokes at exit', { skip: process.platform === 'win32' && 'The provider launcher is supported only on macOS and Linux' }, async () => {
   const dir = await mkdtemp(join(tmpdir(), 'provider-integration-'));
   const workspace = join(dir, 'assistant'); await mkdir(workspace);
   const config = loadConfig({ BRIDGE_TOKEN: secret, BRIDGE_FACECLAW_PROJECT_ID: 'assistant', BRIDGE_POLL_INTERVAL_MS: '60000' });

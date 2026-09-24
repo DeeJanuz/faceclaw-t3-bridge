@@ -1,5 +1,7 @@
 # Bridge federation over Tailscale
 
+Supported on macOS and Linux only. Windows bridges refuse `BRIDGE_PEER_DIRECTORY`.
+
 Each computer runs T3 and a bridge. A phone connects to one bridge, which aggregates the local environments of its explicitly paired peers. Every paired bridge can be the phone's host. T3 desktop windows may be closed; the T3 servers, bridge services, and Tailscale must remain running.
 
 Peers export only their own local primary environment. They never export imported environments. Local T3 credentials stay on their owning computer. This deployment no longer reads or refreshes T3's CLI cloud credential, and does not depend on T3 Connect.

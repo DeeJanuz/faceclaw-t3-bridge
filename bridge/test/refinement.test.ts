@@ -15,7 +15,7 @@ test('refinement removes tool/config exposure and fixes exact model and reasonin
   assert.deepEqual(refinementCatalog.models[0]!.experimental_supported_tools, []);
 });
 
-test('refinement is opt-in, bounds untrusted text, and never returns a partial failed draft', async () => {
+test('refinement is opt-in, bounds untrusted text, and never returns a partial failed draft', { skip: process.platform === 'win32' && 'Luna refinement is supported only on macOS and Linux' }, async () => {
   await assert.rejects(new RefinementService(undefined).rewrite({ text: 'hi', instruction: 'fix' }, new AbortController().signal), /not configured/);
   const dir = await mkdtemp(join(tmpdir(), 'refinement-test-'));
   const executable = join(dir, 'fake-codex');

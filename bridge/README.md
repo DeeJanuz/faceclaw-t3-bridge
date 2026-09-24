@@ -51,7 +51,7 @@ Do not put `BRIDGE_TOKEN` or `T3_ACCESS_TOKEN` in app source or APK builds. Ente
 
 ## Optional assistant archive
 
-The optional assistant archive is supported on macOS and Linux only. Its filesystem protections require POSIX ownership checks, no-follow file opens, and directory synchronization. Windows rejects archive configuration before accessing files; leave `BRIDGE_ARCHIVE_PROJECT_ID` and `BRIDGE_ARCHIVE_WORKSPACE_ROOT` unset there. T3 access, weather, and local voice transcription remain available on Windows.
+The optional assistant archive is supported on macOS and Linux only, like the other POSIX-only features listed under [Configuration](#configuration). Its filesystem protections require POSIX ownership checks, no-follow file opens, and directory synchronization. Windows rejects archive configuration before accessing files; leave `BRIDGE_ARCHIVE_PROJECT_ID` and `BRIDGE_ARCHIVE_WORKSPACE_ROOT` unset there. T3 access, weather, and local voice transcription remain available on Windows.
 
 ## Install and run
 
@@ -218,6 +218,8 @@ Useful controls:
 - `BRIDGE_FACECLAW_PROJECT_ID` enables glasses tools for one T3 project. `BRIDGE_REFINEMENT_CODEX_PATH` enables Luna refinement. See the [integration guide](../docs/faceclaw.md).
 - `BRIDGE_SIGNAL_CLI_PATH` and `BRIDGE_SIGNAL_DATA_DIR` together enable the [Signal service](../docs/signal.md).
 - `BRIDGE_PEER_DIRECTORY` enables [peer federation](../docs/peers.md).
+
+Peer federation, the Signal service, Luna refinement, and the provider launcher protect their state with POSIX ownership checks. They are supported only on macOS and Linux; on Windows the bridge refuses to start with those settings instead of running them unprotected. Core T3 access, weather, and local voice transcription work on all three platforms.
 - `BRIDGE_PROJECT_IDS` restricts all lists, transcript reads, and sends to a comma-separated project ID allowlist.
 - `BRIDGE_RUNTIME_MODE` remains accepted for older installation configurations (`approval-required`, `auto-accept-edits`, `auto`, or `full-access`), but does not select new-session permissions. All new app sessions and their first turns use `full-access`, even when an existing installation sets `approval-required`. They can perform workspace actions without supervised approval prompts. Existing conversations keep their current mode. Update the running computer bridge for this policy to take effect.
 - `BRIDGE_MAX_VOICE_BYTES` defaults to `9600000`, or five minutes of the required PCM format.

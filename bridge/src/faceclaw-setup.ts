@@ -1,3 +1,4 @@
+import { assertPosixFeature } from './platform-support.js';
 import { mkdir, realpath, writeFile } from 'node:fs/promises';
 import { isAbsolute, join } from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -7,6 +8,7 @@ import { validateLauncherConfig } from './faceclaw-launcher.js';
 /** Generates a new private launcher profile. Never edits an existing T3/Codex
  * configuration and never prints its credential. BRIDGE_TOKEN stays out of it. */
 export async function createLauncherProfile(destination: string, env: NodeJS.ProcessEnv = process.env): Promise<string> {
+  assertPosixFeature('The Faceclaw provider launcher', 'the generated launcher profile');
   if (!isAbsolute(destination)) throw new Error('Destination must be absolute');
   const projectId = env.BRIDGE_FACECLAW_PROJECT_ID;
   const ownerToken = env.BRIDGE_TOKEN;

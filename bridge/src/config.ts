@@ -1,5 +1,6 @@
 import { isAbsolute, normalize } from "node:path";
 import { assertArchivePlatform } from "./archive-platform.js";
+import { assertPosixFeature } from "./platform-support.js";
 import type { BridgeConfig, RuntimeMode } from "./types.js";
 
 const BASE64URL_SECRET = /^[A-Za-z0-9_-]{32,256}$/;
@@ -81,6 +82,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): BridgeConfig {
   if (faceclawProjectId && !/^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/.test(faceclawProjectId)) throw new Error('Invalid BRIDGE_FACECLAW_PROJECT_ID');
   const refinementCodexPath = env.BRIDGE_REFINEMENT_CODEX_PATH?.trim() || undefined;
   if (refinementCodexPath && !isAbsolute(refinementCodexPath)) throw new Error('BRIDGE_REFINEMENT_CODEX_PATH must be absolute');
+  if (refinementCodexPath) assertPosixFeature('Luna refinement', 'BRIDGE_REFINEMENT_CODEX_PATH');
   const host = env.BRIDGE_HOST?.trim() || "127.0.0.1";
   const bridgeToken = required(env, "BRIDGE_TOKEN");
   if (!BASE64URL_SECRET.test(bridgeToken)) {
@@ -117,6 +119,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): BridgeConfig {
   }
   const peerDirectory = env.BRIDGE_PEER_DIRECTORY?.trim();
   if (peerDirectory && (!isAbsolute(peerDirectory) || !isLoopback(host))) throw new Error("Peer federation requires an absolute private directory and loopback listener");
+  if (peerDirectory) assertPosixFeature("Peer federation", "BRIDGE_PEER_DIRECTORY");
   const projectIds = parseProjectIds(env.BRIDGE_PROJECT_IDS);
   const signalCliPath = env.BRIDGE_SIGNAL_CLI_PATH;
   const signalDataDirectory = env.BRIDGE_SIGNAL_DATA_DIR;
@@ -124,6 +127,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): BridgeConfig {
     value !== undefined && (!isAbsolute(value) || normalize(value) !== value || /[\u0000\r\n]/.test(value)))) {
     throw new Error('Signal requires normalized absolute BRIDGE_SIGNAL_CLI_PATH and BRIDGE_SIGNAL_DATA_DIR');
   }
+  if (signalCliPath) assertPosixFeature('The Signal service', 'BRIDGE_SIGNAL_CLI_PATH and BRIDGE_SIGNAL_DATA_DIR');
   if (archiveProject && archiveRoot && projectIds && !projectIds.has(archiveProject)) {
     throw new Error("Archive project must be in BRIDGE_PROJECT_IDS");
   }

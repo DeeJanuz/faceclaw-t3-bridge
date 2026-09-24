@@ -79,7 +79,7 @@ describe('peer authorization and operations', () => {
     assert.equal((f.calls.at(-1)!.input as { commandId: string }).commandId, 'stable-answer');
     await assert.rejects(peerOperation(f.client, f.config, 'respondToPlanInput', { threadId: 'shared-thread', requestId: 'question', commandId: 'stable-answer', answers: { other: 'bad' } }));
   });
-  it('validates origin, invitation expiry, exact replay, identity collisions, and owner-only storage', async () => {
+  it('validates origin, invitation expiry, exact replay, identity collisions, and owner-only storage', { skip: process.platform === 'win32' && 'Peer federation is supported only on macOS and Linux' }, async () => {
     for (const origin of ['http://host.tail.ts.net', 'https://evil.example', 'https://host.tail.ts.net/path', 'https://user@host.tail.ts.net', 'https://host.tail.ts.net/?token=bad']) assert.throws(() => peerOrigin(origin));
     const dir = await mkdtemp(join(tmpdir(), 'peer-store-'));
     const store = new PeerStore(dir);
@@ -172,7 +172,7 @@ describe('three-host peer federation', () => {
       await new Promise<void>(resolve => server.close(() => resolve()));
     }
   });
-  it('aggregates each owner once, routes duplicate IDs, isolates credentials, and revokes active peers', async () => {
+  it('aggregates each owner once, routes duplicate IDs, isolates credentials, and revokes active peers', { skip: process.platform === 'win32' && 'Peer federation is supported only on macOS and Linux' }, async () => {
     const root = await mkdtemp(join(tmpdir(), 'peer-fleet-'));
     const fixtures = ['a', 'b', 'c'].map(fixture);
     const stores = fixtures.map((_, i) => new PeerStore(join(root, String(i))));

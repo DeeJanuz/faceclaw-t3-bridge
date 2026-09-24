@@ -36,6 +36,8 @@ Only one authenticated phone connection may register tools. Registration require
 
 ## On-demand Luna refinement
 
+Refinement and the provider launcher below are supported on macOS and Linux only.
+
 Set `BRIDGE_REFINEMENT_CODEX_PATH` to the absolute path of an installed Codex CLI that already has a working login. Restart the development bridge with that optional setting. Refinement always selects `gpt-5.6-luna`, reasoning `low`, normal service tier. It creates no ordinary T3 conversation and requires no new API key. Input is bounded to 8,000 transcript characters and 2,000 instruction characters, with one job at a time, a 45-second generation deadline, and explicit cancel/disconnect cleanup. Allow at least 60 seconds for the client RPC deadline, including the isolation preflight.
 
 Each job first checks the installed CLI against a loopback mock provider and requires the actual outgoing request to contain no tools and the exact model/reasoning. Only then is the real transcript submitted. This fails closed if a future runtime introduces tools. The job ignores user configuration and rules, disables MCP/plugins/apps/shell/browser/agent tools, removes apply_patch and auxiliary tools through a private model catalog, and runs in an empty temporary directory with read-only sandboxing. The existing Codex login is retained; bridge/T3/API secrets are omitted from the child environment. Audio and draft text are never logged. Temporary output is removed on completion, failure, or cancellation. The phone must retain its original draft on every failure and require a later tap to send.

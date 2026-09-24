@@ -6,6 +6,8 @@ import type { AddressInfo } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
+
+const POSIX_ONLY = process.platform === 'win32' && 'Signal service is supported only on macOS and Linux';
 import { Script } from 'node:vm';
 import { SignalStore } from '../src/signal-store.js';
 import { SignalService } from '../src/signal-service.js';
@@ -61,7 +63,7 @@ type ConversationView = { id: string; title: string; lastMessageAt?: number };
 const directory = async (f: ReturnType<typeof fixture>) =>
   (await f.service.rpc(f.credential, 'conversations', {}) as { conversations: ConversationView[] }).conversations;
 
-test('directory sync, opening a recipient and drafting do not create chat activity', async () => {
+test('directory sync, opening a recipient and drafting do not create chat activity', { skip: POSIX_ONLY }, async () => {
   const f = fixture();
   try {
     const recipients = await f.service.rpc(f.credential, 'recipients', {}) as { recipients: ConversationView[] };
@@ -78,7 +80,7 @@ test('directory sync, opening a recipient and drafting do not create chat activi
   } finally { f.clean(); }
 });
 
-test('chat activity orders real incoming and outgoing messages by sent time, independent of arrival and contact refresh', async () => {
+test('chat activity orders real incoming and outgoing messages by sent time, independent of arrival and contact refresh', { skip: POSIX_ONLY }, async () => {
   const f = fixture();
   try {
     await f.service.refreshRecipients();
@@ -112,7 +114,7 @@ test('chat activity orders real incoming and outgoing messages by sent time, ind
   } finally { f.clean(); }
 });
 
-test('expiry, remote delete and stale replay clear or fall back chat recency without removing the recipient', async () => {
+test('expiry, remote delete and stale replay clear or fall back chat recency without removing the recipient', { skip: POSIX_ONLY }, async () => {
   const f = fixture();
   try {
     const old = f.now() - 1000;
@@ -136,7 +138,7 @@ test('expiry, remote delete and stale replay clear or fall back chat recency wit
   } finally { f.clean(); }
 });
 
-test('activity stays scoped, rejects invalid/account-mismatched events, and survives schema-v1 restart without backfill', async () => {
+test('activity stays scoped, rejects invalid/account-mismatched events, and survives schema-v1 restart without backfill', { skip: POSIX_ONLY }, async () => {
   const f = fixture();
   try {
     await f.service.refreshRecipients();
@@ -168,7 +170,7 @@ test('activity stays scoped, rejects invalid/account-mismatched events, and surv
   } finally { f.clean(); }
 });
 
-test('recency sorting has a stable ID tie break and preserves cursor-bound pagination', async () => {
+test('recency sorting has a stable ID tie break and preserves cursor-bound pagination', { skip: POSIX_ONLY }, async () => {
   const f = fixture();
   try {
     for (let i = 0; i < 70; i++) f.ingest('Synthetic equal-time message', {}, `+1555${String(i).padStart(7, '0')}`);
@@ -183,7 +185,7 @@ test('recency sorting has a stable ID tie break and preserves cursor-bound pagin
   } finally { f.clean(); }
 });
 
-test('late confirmed sends add real activity without replay, extending expiry or resurrecting tombstones', async () => {
+test('late confirmed sends add real activity without replay, extending expiry or resurrecting tombstones', { skip: POSIX_ONLY }, async () => {
   const f = fixture();
   try {
     await f.service.refreshRecipients();
@@ -220,7 +222,7 @@ test('late confirmed sends add real activity without replay, extending expiry or
   } finally { f.clean(); }
 });
 
-test('unconfirmed and future-dated send results cannot create chat activity', async () => {
+test('unconfirmed and future-dated send results cannot create chat activity', { skip: POSIX_ONLY }, async () => {
   const f = fixture();
   try {
     await f.service.refreshRecipients(); const conversationId = f.store.state.conversations[0]!.id;
@@ -233,7 +235,7 @@ test('unconfirmed and future-dated send results cannot create chat activity', as
   } finally { f.clean(); }
 });
 
-test('Signal config is opt-in, absolute and independent of T3 authentication', () => {
+test('Signal config is opt-in, absolute and independent of T3 authentication', { skip: POSIX_ONLY }, () => {
   const base = { BRIDGE_TOKEN: 'a'.repeat(32) };
   assert.equal(loadConfig(base).signal, undefined);
   assert.throws(() => loadConfig({ ...base, BRIDGE_SIGNAL_CLI_PATH: '/bin/false' }));
@@ -242,7 +244,7 @@ test('Signal config is opt-in, absolute and independent of T3 authentication', (
     { cliPath: '/bin/false', dataDirectory: '/tmp/signal' });
 });
 
-test('encrypted store protects content, enforces one writer and survives unknown sends', () => {
+test('encrypted store protects content, enforces one writer and survives unknown sends', { skip: POSIX_ONLY }, () => {
   const f = fixture();
   try {
     f.ingest('Private synthetic content');
@@ -258,7 +260,7 @@ test('encrypted store protects content, enforces one writer and survives unknown
   } finally { f.clean(); }
 });
 
-test('encrypted state tampering and insecure permissions fail closed', () => {
+test('encrypted state tampering and insecure permissions fail closed', { skip: POSIX_ONLY }, () => {
   const f = fixture(); f.store.close();
   try {
     const file = join(f.path, 'state.enc'), content = readFileSync(file); content[35] = content[35]! ^ 1; writeFileSync(file, content);
@@ -267,7 +269,7 @@ test('encrypted state tampering and insecure permissions fail closed', () => {
   } finally { chmodSync(f.path, 0o700); f.clean(); }
 });
 
-test('pairing is one use, expires, and never accepts owner/native tokens', () => {
+test('pairing is one use, expires, and never accepts owner/native tokens', { skip: POSIX_ONLY }, () => {
   const f = fixture();
   try {
     assert.throws(() => f.service.authenticate('a'.repeat(32)), /credential/);
@@ -276,7 +278,7 @@ test('pairing is one use, expires, and never accepts owner/native tokens', () =>
   } finally { f.clean(); }
 });
 
-test('incoming account isolation, remote deletion, stale replay and drafts expire together', async () => {
+test('incoming account isolation, remote deletion, stale replay and drafts expire together', { skip: POSIX_ONLY }, async () => {
   const f = fixture();
   try {
     f.service.ingest({ account: OTHER_ACCOUNT, envelope: { sourceUuid: AUTHOR, dataMessage: { message: 'wrong account', timestamp: f.now(), expiresInSeconds: 0 } } });
@@ -291,7 +293,7 @@ test('incoming account isolation, remote deletion, stale replay and drafts expir
   } finally { f.clean(); }
 });
 
-test('remote deletion is bound to author and group context', () => {
+test('remote deletion is bound to author and group context', { skip: POSIX_ONLY }, () => {
   const f = fixture();
   try {
     f.ingest('Direct'); const direct = f.store.state.messages[0]!;
@@ -303,7 +305,7 @@ test('remote deletion is bound to author and group context', () => {
   } finally { f.clean(); }
 });
 
-test('timed data uses conservative sent timestamp, rejects unknown/view-once, expires offline without read receipts', async () => {
+test('timed data uses conservative sent timestamp, rejects unknown/view-once, expires offline without read receipts', { skip: POSIX_ONLY }, async () => {
   const f = fixture();
   try {
     f.ingest('Unknown', { expiresInSeconds: undefined }); f.ingest('View once', { viewOnce: true });
@@ -320,7 +322,7 @@ test('timed data uses conservative sent timestamp, rejects unknown/view-once, ex
   } finally { f.clean(); }
 });
 
-test('send intent is durable before dispatch; duplicates and concurrent requests do not replay', async () => {
+test('send intent is durable before dispatch; duplicates and concurrent requests do not replay', { skip: POSIX_ONLY }, async () => {
   const f = fixture();
   try {
     await f.service.refreshRecipients(); const conversationId = f.store.state.conversations[0]!.id;
@@ -343,7 +345,7 @@ test('send intent is durable before dispatch; duplicates and concurrent requests
   } finally { f.clean(); }
 });
 
-test('offline sends stay drafts; uncertain outcomes never dispatch again', async () => {
+test('offline sends stay drafts; uncertain outcomes never dispatch again', { skip: POSIX_ONLY }, async () => {
   const f = fixture();
   try {
     await f.service.refreshRecipients(); const conversationId = f.store.state.conversations[0]!.id;
@@ -358,7 +360,7 @@ test('offline sends stay drafts; uncertain outcomes never dispatch again', async
   } finally { f.clean(); }
 });
 
-test('timed sends refresh timer before dispatch, and missing timer cannot become 30 days', async () => {
+test('timed sends refresh timer before dispatch, and missing timer cannot become 30 days', { skip: POSIX_ONLY }, async () => {
   const f = fixture();
   try {
     await f.service.refreshRecipients(); const conversationId = f.store.state.conversations[0]!.id;
@@ -371,7 +373,7 @@ test('timed sends refresh timer before dispatch, and missing timer cannot become
   } finally { f.clean(); }
 });
 
-test('Note to Self keeps the linked account direct-chat identity across refresh, sync and restart', async () => {
+test('Note to Self keeps the linked account direct-chat identity across refresh, sync and restart', { skip: POSIX_ONLY }, async () => {
   const f = fixture();
   try {
     await f.service.refreshRecipients();
@@ -391,7 +393,7 @@ test('Note to Self keeps the linked account direct-chat identity across refresh,
   } finally { f.clean(); }
 });
 
-test('Note to Self uses explicit self-send and its freshly verified real timer without replay', async () => {
+test('Note to Self uses explicit self-send and its freshly verified real timer without replay', { skip: POSIX_ONLY }, async () => {
   const f = fixture();
   try {
     await f.service.refreshRecipients(); const self = f.store.state.conversations.find(c => c.self)!;
@@ -407,7 +409,7 @@ test('Note to Self uses explicit self-send and its freshly verified real timer w
   } finally { f.clean(); }
 });
 
-test('Note to Self fails closed on missing timer, wrong account, changed identity or revoked access', async () => {
+test('Note to Self fails closed on missing timer, wrong account, changed identity or revoked access', { skip: POSIX_ONLY }, async () => {
   const f = fixture();
   try {
     f.transport.ownContacts = [{ uuid: SELF, number: ACCOUNT }];
@@ -429,7 +431,7 @@ test('Note to Self fails closed on missing timer, wrong account, changed identit
   } finally { f.clean(); }
 });
 
-test('assistant grants restrict reads/drafts, cannot self-confirm, and revoke during async metadata lookup', async () => {
+test('assistant grants restrict reads/drafts, cannot self-confirm, and revoke during async metadata lookup', { skip: POSIX_ONLY }, async () => {
   const f = fixture();
   try {
     f.ingest('Allowed'); f.ingest('Private other conversation', {}, SECOND);
@@ -453,7 +455,7 @@ test('assistant grants restrict reads/drafts, cannot self-confirm, and revoke du
   } finally { f.clean(); }
 });
 
-test('snapshot pages are bounded, mutation rejects stale pages and settings force reconciliation', async () => {
+test('snapshot pages are bounded, mutation rejects stale pages and settings force reconciliation', { skip: POSIX_ONLY }, async () => {
   const f = fixture();
   try {
     for (let i = 0; i < 70; i++) f.ingest('Synthetic ' + i, {}, AUTHOR, f.now() + i);
@@ -469,7 +471,7 @@ test('snapshot pages are bounded, mutation rejects stale pages and settings forc
   } finally { f.clean(); }
 });
 
-test('assistant approval cannot survive changing and restoring the exact draft during timer lookup', async () => {
+test('assistant approval cannot survive changing and restoring the exact draft during timer lookup', { skip: POSIX_ONLY }, async () => {
   const f = fixture();
   try {
     f.ingest(); const conversationId = f.store.state.conversations[0]!.id;
@@ -488,7 +490,7 @@ test('assistant approval cannot survive changing and restoring the exact draft d
   } finally { f.clean(); }
 });
 
-test('HTTP boundaries isolate APK, assistant, owner and browser origins; setup requires one-use review', async () => {
+test('HTTP boundaries isolate APK, assistant, owner and browser origins; setup requires one-use review', { skip: POSIX_ONLY }, async () => {
   const f = fixture(), ownerToken = 'o'.repeat(32), http = new SignalHttp(f.service, ownerToken, f.now);
   const server = createServer((request, response) => {
     void http.handle(request, response, new URL(request.url ?? '/', 'http://bridge.invalid')).catch(error => {
@@ -531,7 +533,7 @@ test('HTTP boundaries isolate APK, assistant, owner and browser origins; setup r
   } finally { await new Promise<void>(resolve => server.close(() => resolve())); f.clean(); }
 });
 
-test('local reset revokes independently and removes integration content before resetting CLI', async () => {
+test('local reset revokes independently and removes integration content before resetting CLI', { skip: POSIX_ONLY }, async () => {
   const f = fixture();
   try {
     f.ingest();
@@ -542,7 +544,7 @@ test('local reset revokes independently and removes integration content before r
   } finally { f.clean(); }
 });
 
-test('partial group results stay unknown; only an exact late successful result reconciles', async () => {
+test('partial group results stay unknown; only an exact late successful result reconciles', { skip: POSIX_ONLY }, async () => {
   const f = fixture();
   try {
     await f.service.refreshRecipients(); const conversationId = f.store.state.conversations.find(c => c.kind === 'group')!.id;
@@ -555,7 +557,7 @@ test('partial group results stay unknown; only an exact late successful result r
   } finally { f.clean(); }
 });
 
-test('MCP exposes only scoped reads and drafts; no send or arbitrary backend method', async () => {
+test('MCP exposes only scoped reads and drafts; no send or arbitrary backend method', { skip: POSIX_ONLY }, async () => {
   const f = fixture();
   try {
     f.ingest(); const conversationId = f.store.state.conversations[0]!.id;
@@ -573,7 +575,7 @@ test('MCP exposes only scoped reads and drafts; no send or arbitrary backend met
   } finally { f.clean(); }
 });
 
-test('dashboard script parses and keeps unsafe profile data out of HTML generation', () => {
+test('dashboard script parses and keeps unsafe profile data out of HTML generation', { skip: POSIX_ONLY }, () => {
   const html = signalSetupHtml('synthetic-nonce');
   const script = /<script nonce="synthetic-nonce">([\s\S]*?)<\/script>/.exec(html)?.[1];
   assert.ok(script); new Script(script);
@@ -581,7 +583,7 @@ test('dashboard script parses and keeps unsafe profile data out of HTML generati
   assert.ok(script.includes('settingsDirty')); assert.ok(script.includes('activeReview'));
 });
 
-test('supervised CLI verifies version, subscribes and scopes private process options using a synthetic executable', async () => {
+test('supervised CLI verifies version, subscribes and scopes private process options using a synthetic executable', { skip: POSIX_ONLY }, async () => {
   const path = mkdtempSync(join(tmpdir(), 'faceclaw-signal-child-'));
   const executable = join(path, 'fixture-cli');
   writeFileSync(executable, `#!${process.execPath}\nconst readline=require('node:readline');const args=process.argv.slice(2);if(!args.includes('--disable-send-log')||!args.includes('--ignore-attachments')||args.includes('--send-read-receipts'))process.exit(2);readline.createInterface({input:process.stdin}).on('line',line=>{const v=JSON.parse(line);const result=v.method==='version'?{version:'0.14.7'}:v.method==='listAccounts'?[{number:'+15550001111'}]:0;process.stdout.write(JSON.stringify({jsonrpc:'2.0',id:v.id,result})+'\\n');});`, { mode: 0o700 });
@@ -596,7 +598,7 @@ test('supervised CLI verifies version, subscribes and scopes private process opt
   } finally { cli.stop(); rmSync(path, { recursive: true, force: true }); }
 });
 
-test('full bridge routes loopback Signal setup before rejecting browser origins elsewhere', async () => {
+test('full bridge routes loopback Signal setup before rejecting browser origins elsewhere', { skip: POSIX_ONLY }, async () => {
   const { createBridgeServer } = await import('../src/server.js');
   const directory = mkdtempSync(join(tmpdir(), 'faceclaw-signal-server-'));
   const ownerToken = 'o'.repeat(32);

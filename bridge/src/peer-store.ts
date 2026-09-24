@@ -57,12 +57,18 @@ export async function protectPeerDirectory(directory: string): Promise<void> {
   if (!info.isDirectory() || info.isSymbolicLink()) throw new Error('Invalid peer directory');
   if (process.platform !== 'win32' && (info.uid !== process.getuid?.() || (info.mode & 0o077))) throw new Error('Peer directory must be owner-only (0700)');
 }
+// A PowerShell 7 parent sets PSModulePath to its own modules, which stops
+// Windows PowerShell 5.1 from loading built-ins such as Get-Acl.
+export function windowsPowerShellEnvironment(env: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
+  return Object.fromEntries(Object.entries(env).filter(([key]) => key.toLowerCase() !== 'psmodulepath'));
+}
 const checkedWindowsFiles = new Set<string>();
 async function verifyWindowsOwner(file: string): Promise<void> {
   if (process.platform !== 'win32' || checkedWindowsFiles.has(file)) return;
   const literal = file.replaceAll("'", "''");
   const script = `$ErrorActionPreference='Stop'; $sid=[System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value; $acl=Get-Acl -LiteralPath '${literal}'; if($acl.GetOwner([System.Security.Principal.SecurityIdentifier]).Value -ne $sid){exit 1}; foreach($rule in $acl.Access){if($rule.AccessControlType -eq 'Allow' -and $rule.IdentityReference.Translate([System.Security.Principal.SecurityIdentifier]).Value -ne $sid){exit 1}}`;
-  await promisify(execFile)('powershell.exe', ['-NoProfile', '-NonInteractive', '-EncodedCommand', Buffer.from(script, 'utf16le').toString('base64')]);
+  await promisify(execFile)('powershell.exe', ['-NoProfile', '-NonInteractive', '-EncodedCommand', Buffer.from(script, 'utf16le').toString('base64')],
+    { env: windowsPowerShellEnvironment(), windowsHide: true });
   checkedWindowsFiles.add(file);
 }
 export async function readPeerFile(file: string): Promise<string> {

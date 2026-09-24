@@ -255,3 +255,9 @@ describe('three-host peer federation', () => {
     }
   });
 });
+
+it('Windows PowerShell checks drop an inherited PowerShell 7 module path', async () => {
+  const { windowsPowerShellEnvironment } = await import('../src/peer-store.js');
+  const env = windowsPowerShellEnvironment({ PATH: '/bin', PSModulePath: 'C:\\pwsh7\\Modules', psmodulepath: 'x', HOME: '/home/test' });
+  assert.deepEqual(env, { PATH: '/bin', HOME: '/home/test' });
+});

@@ -13,7 +13,10 @@ import { cleanPath, connectionInfo, dataDirectory, loopbackT3Url, resolveT3Entry
 const exec = promisify(execFile);
 const repo = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 async function command(executable, args) {
-  try { return await exec(executable, args, { encoding: 'utf8', timeout: 30000, maxBuffer: 4 * 1024 * 1024, windowsHide: true }); }
+  // A PowerShell 7 parent's PSModulePath stops Windows PowerShell 5.1 from loading built-in modules.
+  const env = path.basename(executable).toLowerCase() === 'powershell.exe'
+    ? Object.fromEntries(Object.entries(process.env).filter(([key]) => key.toLowerCase() !== 'psmodulepath')) : process.env;
+  try { return await exec(executable, args, { encoding: 'utf8', timeout: 30000, maxBuffer: 4 * 1024 * 1024, windowsHide: true, env }); }
   catch { throw new Error(`A ${path.basename(executable)} command failed. Inspect prerequisites and permissions; no command output or credentials were logged.`); }
 }
 async function exists(file) { try { await lstat(file); return true; } catch (error) { if (error.code === 'ENOENT') return false; throw error; } }

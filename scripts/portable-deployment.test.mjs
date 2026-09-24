@@ -227,7 +227,7 @@ test('generated macOS LaunchAgent actually forwards only selected T3 settings th
     const config = { t3AppPath: '/Applications/Renamed.app', t3BaseDir: '/Users/test/Custom T3', t3BaseUrl: 'http://127.0.0.1:4773' };
     const plist = path.join(directory, 'test.plist');
     const { fileURLToPath } = await import('node:url');
-    await execute(process.execPath, [fileURLToPath(new URL('./deployment-helpers.mjs', import.meta.url)), 'launch-agent', plist, 'com.example.test', runner, directory, process.execPath, path.join(directory, 'out'), path.join(directory, 'err'), 'computer.example.ts.net', '8443', '8787', '', '', '', config.t3AppPath, config.t3BaseDir, config.t3BaseUrl]);
+    await execute(process.execPath, [fileURLToPath(new URL('./deployment-helpers.mjs', import.meta.url)), 'launch-agent', plist, 'com.example.test', runner, directory, process.execPath, path.join(directory, 'out'), path.join(directory, 'err'), 'computer.example.ts.net', '8443', '8787', '', '', config.t3AppPath, config.t3BaseDir, config.t3BaseUrl]);
     const parsed = JSON.parse((await execute('/usr/bin/plutil', ['-convert', 'json', '-o', '-', plist])).stdout);
     const [program, ...args] = parsed.ProgramArguments;
     const result = JSON.parse((await execute(program, args, { env: { ...process.env, T3_ACCESS_TOKEN: 'must-not-inherit' } })).stdout);

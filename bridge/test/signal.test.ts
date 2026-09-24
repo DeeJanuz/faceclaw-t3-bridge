@@ -595,3 +595,24 @@ test('supervised CLI verifies version, subscribes and scopes private process opt
     await cli.resetData(); assert.equal(cli.ready, false);
   } finally { cli.stop(); rmSync(path, { recursive: true, force: true }); }
 });
+
+test('full bridge routes loopback Signal setup before rejecting browser origins elsewhere', async () => {
+  const { createBridgeServer } = await import('../src/server.js');
+  const directory = mkdtempSync(join(tmpdir(), 'faceclaw-signal-server-'));
+  const ownerToken = 'o'.repeat(32);
+  const config = { ...loadConfig({ BRIDGE_TOKEN: ownerToken, BRIDGE_PASSPHRASE: 'pair-secret', BRIDGE_POLL_INTERVAL_MS: '60000' }),
+    signal: { cliPath: join(directory, 'missing-signal-cli'), dataDirectory: join(directory, 'data') } };
+  const client = { shell: async () => ({ snapshotSequence: 1, projects: [], threads: [] }) } as never;
+  const server = createBridgeServer(config, client, { transcribe: async () => '' });
+  server.listen(0, '127.0.0.1'); await once(server, 'listening');
+  const base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+  const post = (path: string, body: unknown, origin?: string) => fetch(base + path, { method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...(origin ? { Origin: origin } : {}) }, body: JSON.stringify(body) });
+  try {
+    assert.equal((await fetch(base + '/signal/setup')).status, 200);
+    assert.equal((await post('/v1/signal/admin', { method: 'login', params: { ownerToken } }, base)).status, 200);
+    assert.equal((await post('/v1/signal/admin', { method: 'login', params: { ownerToken } }, 'https://attacker.invalid')).status, 403);
+    assert.equal((await post('/v1/faceclaw/pair', { passphrase: 'pair-secret' }, base)).status, 403);
+    assert.equal((await post('/v1/faceclaw/pair', { passphrase: 'pair-secret' })).status, 200);
+  } finally { await new Promise<void>(resolve => server.close(() => resolve())); rmSync(directory, { recursive: true, force: true }); }
+});

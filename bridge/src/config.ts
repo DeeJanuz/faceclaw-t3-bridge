@@ -34,40 +34,8 @@ function integer(
   return value;
 }
 
-function boolean(env: NodeJS.ProcessEnv, name: string, fallback: boolean): boolean {
-  const raw = env[name]?.trim().toLowerCase();
-  if (raw === undefined || raw === "") return fallback;
-  if (raw === "true") return true;
-  if (raw === "false") return false;
-  throw new Error(`${name} must be true or false`);
-}
-
 function isLoopback(host: string): boolean {
   return host === "127.0.0.1" || host === "::1" || host === "localhost";
-}
-
-function parseOrigins(value: string | undefined): ReadonlySet<string> {
-  const origins = new Set<string>();
-  for (const raw of value?.split(",") ?? []) {
-    const origin = raw.trim();
-    if (!origin) continue;
-    if (origin === "*") throw new Error("BRIDGE_ALLOWED_ORIGINS cannot contain a wildcard");
-    if (origin === "null") {
-      origins.add(origin);
-      continue;
-    }
-    let url: URL;
-    try {
-      url = new URL(origin);
-    } catch {
-      throw new Error(`Invalid BRIDGE_ALLOWED_ORIGINS entry: ${origin}`);
-    }
-    if (url.origin !== origin || !["http:", "https:"].includes(url.protocol)) {
-      throw new Error(`BRIDGE_ALLOWED_ORIGINS entries must be exact HTTP origins: ${origin}`);
-    }
-    origins.add(origin);
-  }
-  return origins;
 }
 
 function parseT3BaseUrl(raw: string): URL {
@@ -127,10 +95,8 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): BridgeConfig {
   ) {
     throw new Error("BRIDGE_PASSPHRASE must be 1 to 256 characters without line breaks");
   }
-  const allowedOrigins = parseOrigins(env.BRIDGE_ALLOWED_ORIGINS);
-  if (!isLoopback(host) && allowedOrigins.size === 0) {
-    throw new Error("BRIDGE_ALLOWED_ORIGINS is required for a non-loopback bridge host");
-  }
+  // Phones reach the bridge through Tailscale Serve; the listener stays local.
+  if (!isLoopback(host)) throw new Error("BRIDGE_HOST must be a loopback address");
   const runtimeMode = (env.BRIDGE_RUNTIME_MODE?.trim() || "approval-required") as RuntimeMode;
   if (!RUNTIME_MODES.has(runtimeMode)) {
     throw new Error("BRIDGE_RUNTIME_MODE is not supported");
@@ -171,9 +137,6 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): BridgeConfig {
     port: integer(env, "BRIDGE_PORT", 8787, 1, 65535),
     bridgeToken,
     bridgePassphrase: configuredPassphrase ?? null,
-    allowedOrigins,
-    allowEvenLoopbackOrigin: boolean(env, "BRIDGE_ALLOW_EVEN_LOOPBACK_ORIGIN", false),
-    allowNoOrigin: boolean(env, "BRIDGE_ALLOW_NO_ORIGIN", false),
     projectIds: parseProjectIds(env.BRIDGE_PROJECT_IDS),
     runtimeMode,
     pollIntervalMs: integer(env, "BRIDGE_POLL_INTERVAL_MS", 500, 500, 60_000),

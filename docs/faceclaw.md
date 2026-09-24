@@ -1,6 +1,6 @@
 # Faceclaw bridge integration
 
-The Faceclaw fork uses the same projects, sessions, model catalog, transcripts, plan questions, settlement, and voice RPCs as Even Hub. Existing Hub and Android companion endpoints retain their original authentication and origin checks. No installed service or T3 provider configuration is changed by building this branch.
+The Faceclaw T3 app connects through a native endpoint for projects, sessions, the model catalog, transcripts, plan questions, settlement, and voice. The bridge has no browser routes; every request with an `Origin` header is rejected, except the loopback-only [Signal setup page](signal.md). Building this repository changes no installed service or T3 provider configuration.
 
 ## Local UI testing
 
@@ -19,9 +19,9 @@ Projects `assistant` and `faceclaw` contain a welcome conversation and an active
 
 ## Native transport
 
-Faceclaw pairs with `POST /v1/faceclaw/pair`, no Origin header, JSON `{ "passphrase": "..." }`. It returns `{ "token": "..." }`. The native token is derived for Faceclaw alone; it cannot authenticate `/v1/events`, browser HTTP APIs, Android companion sync, provider provisioning, or MCP tools.
+Faceclaw pairs with `POST /v1/faceclaw/pair`, no Origin header, JSON `{ "passphrase": "..." }`. It returns `{ "token": "..." }`. The native token is derived for Faceclaw alone; it cannot authenticate owner HTTP routes, provider provisioning, or MCP tools.
 
-Connect to `/v1/faceclaw/events` without Origin and with WebSocket subprotocols `even-t3-v1` and `auth.<token>`. Native clients may instead use the Authorization bearer header while retaining the `even-t3-v1` subprotocol. RPC/event frames and binary voice frames match the documented [bridge protocol](../bridge/README.md#websocket-protocol). The phone should use private HTTPS/WSS outside local emulator testing. Never enable a broad no-Origin exception for the original Hub endpoint to accommodate Faceclaw.
+Connect to `/v1/faceclaw/events` without Origin and with WebSocket subprotocols `even-t3-v1` and `auth.<token>`. Native clients may instead use the Authorization bearer header while retaining the `even-t3-v1` subprotocol. RPC/event frames and binary voice frames match the documented [bridge protocol](../bridge/README.md#websocket-protocol). The phone should use private HTTPS/WSS outside local emulator testing.
 
 Additional native-only RPCs:
 
@@ -69,3 +69,13 @@ The launcher bootstrap credential, exact server-selected project, and server-iss
 T3 does not include its own thread ID in the provider subprocess handshake. Therefore automatic grants identify an authenticated provider session within the configured project, including any Codex children hosted there, without claiming a specific T3 thread. The local OS account owning the launcher configuration is trusted. Other unrestricted code running as that same user can read its files; this mechanism is not an OS sandbox between mutually hostile same-user agents. Use a separate OS identity and protected service configuration if that isolation is required.
 
 For explicit external adapters, owner-only `POST /v1/faceclaw/tool-credential` with the master bridge bearer and `{threadId}` issues a one-hour capability bound to an existing allowed T3 thread in the configured project. This endpoint is never exposed to the phone or ordinary project agents. It is optional; the generated launcher handles normal automatic integration. Both grant types use the standard POST MCP endpoint `/v1/faceclaw/mcp`; native/Hub/companion credentials cannot authorize it. In-memory replay receipts and process-specific signatures prevent transport retries and invalidate old calls across bridge restarts. They cannot determine whether a model intentionally issues a new, semantically identical action with a new request ID.
+
+## Plan approval and session controls
+
+The separate native Faceclaw T3 client can select plan mode while reviewing a draft, change an idle session's reasoning, and review a completed plan. These controls require the updated bridge.
+
+The bridge accepts `plan.approve` with the thread ID, plan ID, and exact revision shown in the review. It freshly verifies project visibility, thread identity, completion, and the plan text. Invalid, changed, already implemented, oversized, or older-turn plans cannot be approved. Structured plan text is limited to 64,000 characters.
+
+The installed T3 contract uses `thread.interaction-mode.set` followed by `thread.turn.start` with `sourceProposedPlan: { threadId, planId }`. The implementation message includes the reviewed plan text, and the thread keeps its existing runtime permissions. Stable command IDs deduplicate implementation intents across reconnects and bridge restarts. Native Faceclaw persists an approval lock in its existing encrypted draft store before dispatch. Uncertain dispatches remain locked and require checking T3 before another attempt.
+
+T3 has no atomic revision precondition or combined mode-change-and-start operation in this installed contract. The bridge checks the revision immediately before dispatch, but another T3 client can change a plan or session concurrently. The implementation message still carries the text that was reviewed. If mode switching succeeds and turn start fails, the selected mode can remain changed. The bridge does not retry the turn automatically. A successful dispatch receipt confirms command acceptance, not provider completion.

@@ -16,10 +16,6 @@ export interface BridgeConfig {
   readonly port: number;
   readonly bridgeToken: string;
   readonly bridgePassphrase: string | null;
-  readonly allowedOrigins: ReadonlySet<string>;
-  /** Opt-in for Even's phone-local HTTP WebView on 127.0.0.1 at changing ports. */
-  readonly allowEvenLoopbackOrigin: boolean;
-  readonly allowNoOrigin: boolean;
   readonly projectIds: ReadonlySet<string> | null;
   readonly runtimeMode: RuntimeMode;
   readonly pollIntervalMs: number;

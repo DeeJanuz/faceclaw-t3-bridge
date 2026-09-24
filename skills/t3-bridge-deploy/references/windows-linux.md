@@ -52,7 +52,7 @@ node scripts/install-portable.mjs
 
 The block shows arguments, not a directly executable multiline shell command. Pass them as a native argument list, or use correct quoting and the chosen shell's line continuation. Never interpolate user paths into evaluated shell code.
 
-User data goes under `%LOCALAPPDATA%\Even T3 Bridge` on Windows or `~/.local/share/even-t3-bridge` on Linux. Generated credentials and configuration live in `service/credentials.json` and `service/portable-config.json`. The installer reports their paths, not their values. Have the user privately copy `pairingPassphrase` from the credential file into Even Hub; do not read it into the agent transcript.
+User data goes under `%LOCALAPPDATA%\Even T3 Bridge` on Windows or `~/.local/share/even-t3-bridge` on Linux. Generated credentials and configuration live in `service/credentials.json` and `service/portable-config.json`. The installer reports their paths, not their values. Have the user privately copy `pairingPassphrase` from the credential file into the T3 app; do not read it into the agent transcript.
 
 If Serve needs additional permission, keep the user service/config and elevate only the exact reviewed command:
 
@@ -64,10 +64,9 @@ Use the chosen ports. Do not overwrite an existing handler. Verify afterward:
 
 ```sh
 node scripts/portable-info.mjs --verify
-node scripts/package-evenhub.mjs --tailscale-host <actual-device-MagicDNS-name> --https-port 8443
 ```
 
-The verification command emits endpoint URLs, verifies local pairing and rejection without authentication, checks T3 through private HTTPS, and exercises Whisper with synthetic silence through private WSS. Also inspect startup registration and service status; these checks do not replace a physical glasses test. `--output-dir <absolute-path>` is supported for packaging.
+The verification command emits the T3 bridge URL, verifies local native pairing and rejection without authentication, checks T3 through private HTTPS, and exercises Whisper with synthetic silence through private WSS. Also inspect startup registration and service status; these checks do not replace a physical glasses test.
 
 ## Operate and remove
 

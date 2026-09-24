@@ -32,7 +32,7 @@ function fixture(environmentId: string) {
     settleThread: action('settleThread'), respondToPlanInput: action('respondToPlanInput'),
     setModel: action('setModel'), setReasoning: action('setReasoning'), approvePlan: action('approvePlan'),
   };
-  const config = loadConfig({ BRIDGE_TOKEN: 'x'.repeat(32), BRIDGE_ALLOWED_ORIGINS: 'null' });
+  const config = loadConfig({ BRIDGE_TOKEN: 'x'.repeat(32) });
   return { client, thread, shell, calls, config };
 }
 async function eventually(check: () => Promise<boolean>, timeout = 10_000) {
@@ -218,7 +218,7 @@ describe('three-host peer federation', () => {
       assert.equal((await (aToB as PeerT3Client).refreshShell()).threads.length, 1);
       const aOrigin = origins.get(identities[0]!.origin)!.replace('ws:', 'http:');
       const entry = (await stores[1]!.read()).peers.find(p => p.bridgeId === identities[0]!.bridgeId)!;
-      const denied = await fetch(`${aOrigin}/v1/sessions`, { headers: { Origin: 'null', Authorization: `Bearer ${entry.outgoingToken}` } });
+      const denied = await fetch(`${aOrigin}/v1/status`, { headers: { Authorization: `Bearer ${entry.outgoingToken}` } });
       assert.equal(denied.status, 401);
       for (const [route, headers, body, expected] of [
         ['/v1/peer/pair', { Origin: 'null' }, '{}', 403],

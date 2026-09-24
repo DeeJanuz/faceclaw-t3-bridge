@@ -82,7 +82,7 @@ export async function main(args = process.argv.slice(2)) {
       const credentials = mac ? { bridgeToken: await readPeerFile(path.join(dataDirectory(), 'credentials', 'bridge-token')) }
         : JSON.parse(await readPrivateFile(path.join(path.dirname(serviceFile), 'credentials.json')));
       const response = await fetch(`http://127.0.0.1:${config.bridgePort}/v1/environments`, {
-        headers: { Origin: 'null', Authorization: `Bearer ${credentials.bridgeToken}` }, signal: AbortSignal.timeout(5000) });
+        headers: { Authorization: `Bearer ${credentials.bridgeToken}` }, signal: AbortSignal.timeout(5000) });
       if (!response.ok) throw new Error('Could not inspect running bridge');
       console.log(JSON.stringify(await response.json(), null, 2));
     }

@@ -67,9 +67,9 @@ test('relay rejects arguments outside the registered capability schema before di
   assert.equal(sent.length, 0);
 });
 
-test('Faceclaw native pairing and socket retain browser/companion credential separation and existing T3 APIs', async () => {
+test('Faceclaw native pairing and socket keep owner credential separation and existing T3 APIs', async () => {
   const origin = 'https://hub.example';
-  const config = loadConfig({ BRIDGE_TOKEN: secret, BRIDGE_PASSPHRASE: 'pair-secret', BRIDGE_ALLOWED_ORIGINS: origin, BRIDGE_POLL_INTERVAL_MS: '60000' });
+  const config = loadConfig({ BRIDGE_TOKEN: secret, BRIDGE_PASSPHRASE: 'pair-secret', BRIDGE_POLL_INTERVAL_MS: '60000' });
   const client = { shell: async () => ({ snapshotSequence: 1, projects: [], threads: [] }) } as unknown as T3Client;
   const server = createBridgeServer(config, client, {} as Transcriber);
   server.listen(0, '127.0.0.1'); await once(server, 'listening');
@@ -85,11 +85,10 @@ test('Faceclaw native pairing and socket retain browser/companion credential sep
     assert.equal(response.status, 200);
     const native = (await response.json() as { token: string }).token;
     assert.notEqual(native, secret);
-    assert.equal((await post('/v1/phone/sync', {}, native)).status, 401);
     assert.equal((await post('/v1/faceclaw/tool-credential', { threadId: 'x' }, native)).status, 401);
-    assert.equal((await fetch(base + '/v1/projects', { headers: { Origin: origin, Authorization: `Bearer ${native}` } })).status, 401);
+    assert.equal((await fetch(base + '/v1/status', { headers: { Authorization: `Bearer ${native}` } })).status, 401);
     for (const [path, token, requestOrigin] of [
-      ['/v1/events', native, origin], ['/v1/faceclaw/events', secret, undefined], ['/v1/faceclaw/events', native, origin],
+      ['/v1/events', native, undefined], ['/v1/faceclaw/events', secret, undefined], ['/v1/faceclaw/events', native, origin],
     ] as const) {
       const denied = new WebSocket(base.replace('http:', 'ws:') + path, ['even-t3-v1', `auth.${token}`], requestOrigin ? { origin: requestOrigin } : {});
       await assert.rejects(once(denied, 'open'), /401/);

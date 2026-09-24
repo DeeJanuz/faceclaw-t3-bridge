@@ -8,7 +8,6 @@ const config = loadConfig({
   BRIDGE_HOST: '127.0.0.1', BRIDGE_PORT: '18790', BRIDGE_POLL_INTERVAL_MS: '500',
   BRIDGE_TOKEN: 'faceclaw_fixture_token_local_only_123456789',
   BRIDGE_PASSPHRASE: 'local-faceclaw-fixture', BRIDGE_FACECLAW_PROJECT_ID: 'assistant',
-  BRIDGE_ALLOWED_ORIGINS: 'http://localhost:5178,http://127.0.0.1:5178',
 });
 let sequence = 1;
 const now = () => new Date().toISOString();

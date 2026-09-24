@@ -11,7 +11,7 @@ import WebSocket from "ws";
 import { loadConfig } from "../src/config.js";
 import { completedTurn, normalizeProjects, normalizeSessions, normalizeTranscript } from "../src/normalize.js";
 import { createBridgeServer } from "../src/server.js";
-import { originAllowed } from "../src/security.js";
+import { faceclawToken } from "../src/faceclaw.js";
 import type {
   BridgeConfig,
   T3Client,
@@ -28,7 +28,8 @@ import { pcmToWav, WhisperCppTranscriber } from "../src/voice.js";
 import { normalizePendingPlanInput } from "../src/plan-input.js";
 
 const BRIDGE_TOKEN = "abcdefghijklmnopqrstuvwxyzABCDEF";
-const ORIGIN = "https://even-app.example";
+const NATIVE_TOKEN = faceclawToken(BRIDGE_TOKEN);
+const BROWSER_ORIGIN = "https://even-app.example";
 
 function config(overrides: Partial<BridgeConfig> = {}): BridgeConfig {
   return {
@@ -36,9 +37,6 @@ function config(overrides: Partial<BridgeConfig> = {}): BridgeConfig {
     port: 8787,
     bridgeToken: BRIDGE_TOKEN,
     bridgePassphrase: "passphrase",
-    allowedOrigins: new Set([ORIGIN]),
-    allowEvenLoopbackOrigin: false,
-    allowNoOrigin: false,
     projectIds: null,
     runtimeMode: "approval-required",
     pollIntervalMs: 60_000,
@@ -324,11 +322,9 @@ function rpc(socket: WebSocket, id: string, method: string, params: Record<strin
   });
 }
 
-async function openSocket(base: string, origin = ORIGIN): Promise<WebSocket> {
-  const url = base.replace(/^http/, "ws") + "/v1/events";
-  const socket = new WebSocket(url, ["even-t3-v1", `auth.${BRIDGE_TOKEN}`], {
-    origin,
-  });
+async function openSocket(base: string): Promise<WebSocket> {
+  const url = base.replace(/^http/, "ws") + "/v1/faceclaw/events";
+  const socket = new WebSocket(url, ["even-t3-v1", `auth.${NATIVE_TOKEN}`]);
   await new Promise<void>((resolve, reject) => {
     socket.once("open", resolve);
     socket.once("error", reject);
@@ -342,36 +338,13 @@ describe("configuration security", () => {
     T3_ACCESS_TOKEN: "t3-secret",
   };
 
-  it("rejects non-loopback exposure without an exact origin allowlist", () => {
-    assert.throws(
-      () => loadConfig({ ...baseEnv, BRIDGE_HOST: "0.0.0.0" }),
-      /BRIDGE_ALLOWED_ORIGINS is required/,
-    );
+  it("keeps the listener on loopback", () => {
+    assert.equal(loadConfig(baseEnv).host, "127.0.0.1");
+    assert.throws(() => loadConfig({ ...baseEnv, BRIDGE_HOST: "0.0.0.0" }), /BRIDGE_HOST must be a loopback address/);
   });
 
-  it("rejects weak secrets and wildcard origins", () => {
+  it("rejects weak secrets", () => {
     assert.throws(() => loadConfig({ ...baseEnv, BRIDGE_TOKEN: "short" }), /BRIDGE_TOKEN/);
-    assert.throws(
-      () => loadConfig({ ...baseEnv, BRIDGE_ALLOWED_ORIGINS: "*" }),
-      /cannot contain a wildcard/,
-    );
-  });
-
-  it("allows only the explicit opaque WebView origin while keeping missing origins denied", () => {
-    const result = loadConfig({ ...baseEnv, BRIDGE_ALLOWED_ORIGINS: "null" });
-    assert.deepEqual([...result.allowedOrigins], ["null"]);
-    assert.equal(result.allowNoOrigin, false);
-  });
-
-  it("requires an explicit boolean opt-in for phone-local Even origins", () => {
-    assert.equal(loadConfig(baseEnv).allowEvenLoopbackOrigin, false);
-    assert.equal(loadConfig({ ...baseEnv, BRIDGE_ALLOW_EVEN_LOOPBACK_ORIGIN: "false" }).allowEvenLoopbackOrigin, false);
-    const enabled = loadConfig({ ...baseEnv, BRIDGE_ALLOW_EVEN_LOOPBACK_ORIGIN: "true" });
-    assert.equal(enabled.allowEvenLoopbackOrigin, true);
-    assert.equal(enabled.allowNoOrigin, false);
-    assert.deepEqual([...enabled.allowedOrigins], []);
-    assert.throws(() => loadConfig({ ...baseEnv, BRIDGE_ALLOW_EVEN_LOOPBACK_ORIGIN: "*" }), /must be true or false/);
-    assert.throws(() => loadConfig({ ...baseEnv, BRIDGE_HOST: "0.0.0.0", BRIDGE_ALLOW_EVEN_LOOPBACK_ORIGIN: "true" }), /BRIDGE_ALLOWED_ORIGINS is required/);
   });
 
   it("enables pairing only when a bounded passphrase is explicitly configured", () => {
@@ -1174,350 +1147,98 @@ describe("normalization", () => {
   });
 });
 
+// Origins the Even Hub bridge accepted; none may reach this bridge.
 const evenOrigins = ["http://127.0.0.1", "http://127.0.0.1:1", "http://127.0.0.1:80", "http://127.0.0.1:43751", "http://127.0.0.1:65535"];
-const rejectedEvenOrigins = [
-  "https://127.0.0.1:43751", "http://localhost:43751", "http://[::1]:43751",
-  "http://127.0.0.2:43751", "http://127.1:43751", "http://2130706433:43751",
-  "http://0x7f000001:43751", "http://0177.0.0.1:43751", "http://127.0.0.1.:43751",
-  "http://127.0.0.1.attacker.example:43751", "http://127.0.0.1@attacker.example:43751",
-  "http://attacker@127.0.0.1:43751", "http://127.0.0.1:43751/", "http://127.0.0.1:43751/path",
-  "http://127.0.0.1:43751?x=1", "http://127.0.0.1:43751#x", "http://127.0.0.1:0",
-  "http://127.0.0.1:65536", "http://127.0.0.1:043751", "http://127.0.0.1:-1",
-  "http://127.0.0.1:+1", "http://127.0.0.1:", "http://127.0.0.1:1.0",
-  "http://127.0.0.1:1e3", "http://127.0.0.1:43751,http://attacker.example",
-  "http://127.0.0.1:43751 http://attacker.example", "https://mac.other.ts.net:8443",
-  "https://attacker.example", "null",
-];
 
-describe("Even phone-local origin boundary", () => {
-  it("accepts only the raw numeric HTTP origin and bounded decimal ports when enabled", () => {
-    const enabled = config({ allowEvenLoopbackOrigin: true });
-    const allowed = (origin: string | undefined, settings = enabled) =>
-      originAllowed({ headers: { origin } } as IncomingMessage, settings);
-    for (const origin of evenOrigins) {
-      assert.equal(allowed(origin), true, origin);
-      assert.equal(allowed(origin, config()), false, origin);
-    }
-    for (const origin of [...rejectedEvenOrigins, " http://127.0.0.1:43751", "http://127.0.0.1:43751\n", "http://127.0.0.1:43751\r\n", "HTTP://127.0.0.1:43751"]) {
-      assert.equal(allowed(origin), false, origin);
-    }
-    assert.equal(allowed(undefined), false);
-    assert.equal(allowed(undefined, config({ allowNoOrigin: true })), true);
-    assert.equal(allowed("null", config({ allowedOrigins: new Set(["null"]) })), true);
-    assert.equal(allowed(ORIGIN), true);
+async function pair(base: string, passphrase: unknown, headers: Record<string, string> = {}) {
+  return fetch(`${base}/v1/faceclaw/pair`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", ...headers },
+    body: JSON.stringify({ passphrase }),
   });
-
-  it("allows preflight, pairing and authenticated HTTP with exact echoed origins across ports", async () => {
-    const { base } = await startServer(new FakeT3Client(), new FakeTranscriber(), { allowEvenLoopbackOrigin: true });
-    for (const origin of evenOrigins) {
-      const preflight = await fetch(`${base}/v1/pair`, {
-        method: "OPTIONS",
-        headers: { Origin: origin, "Access-Control-Request-Method": "POST", "Access-Control-Request-Headers": "content-type" },
-      });
-      assert.equal(preflight.status, 204, origin);
-      assert.equal(preflight.headers.get("Access-Control-Allow-Origin"), origin);
-      assert.equal(preflight.headers.get("Vary"), "Origin");
-      const paired = await fetch(`${base}/v1/pair`, {
-        method: "POST", headers: { Origin: origin, "Content-Type": "application/json" },
-        body: JSON.stringify({ passphrase: "passphrase" }),
-      });
-      assert.equal(paired.status, 200, origin);
-      assert.equal(paired.headers.get("Access-Control-Allow-Origin"), origin);
-      assert.deepEqual(await paired.json(), { token: BRIDGE_TOKEN });
-      const authenticated = await fetch(`${base}/v1/sessions`, { headers: { Origin: origin, Authorization: `Bearer ${BRIDGE_TOKEN}` } });
-      assert.equal(authenticated.status, 200);
-      assert.equal(authenticated.headers.get("Access-Control-Allow-Origin"), origin);
-      await authenticated.body?.cancel();
-    }
-  });
-
-  it("denies unapproved and malformed origins on preflight and pairing even with valid credentials", async () => {
-    const { base, client } = await startServer(new FakeT3Client(), new FakeTranscriber(), { allowEvenLoopbackOrigin: true });
-    for (const origin of [...rejectedEvenOrigins, undefined]) {
-      for (const method of ["OPTIONS", "POST"]) {
-        const response = await fetch(`${base}/v1/pair`, {
-          method,
-          headers: { ...(origin === undefined ? {} : { Origin: origin }), "Content-Type": "application/json" },
-          ...(method === "POST" ? { body: JSON.stringify({ passphrase: "passphrase" }) } : {}),
-        });
-        assert.equal(response.status, 403, `${method} ${origin}`);
-        assert.equal(response.headers.get("Access-Control-Allow-Origin"), null);
-        assert.equal((await response.text()).includes(BRIDGE_TOKEN), false);
-      }
-    }
-    assert.equal(client.shellCalls, 0);
-  });
-
-  it("still requires authentication and rate limits pairing across changing ports", async () => {
-    const { base, client } = await startServer(new FakeT3Client(), new FakeTranscriber(), { allowEvenLoopbackOrigin: true });
-    for (let index = 0; index < 6; index += 1) {
-      const origin = `http://127.0.0.1:${43751 + index}`;
-      const response = await fetch(`${base}/v1/pair`, {
-        method: "POST", headers: { Origin: origin, "Content-Type": "application/json" },
-        body: JSON.stringify({ passphrase: index < 5 ? "wrong" : "passphrase" }),
-      });
-      assert.equal(response.status, index < 5 ? 401 : 429);
-      assert.equal((await response.text()).includes(BRIDGE_TOKEN), false);
-    }
-    const missingToken = await fetch(`${base}/v1/sessions`, { headers: { Origin: evenOrigins[3]! } });
-    assert.equal(missingToken.status, 401);
-    await missingToken.body?.cancel();
-    assert.equal(client.shellCalls, 0);
-  });
-
-  it("uses the same origin policy for WebSockets and preserves token authentication", async () => {
-    const { base } = await startServer(new FakeT3Client(), new FakeTranscriber(), { allowEvenLoopbackOrigin: true });
-    for (const origin of evenOrigins) {
-      const socket = await openSocket(base, origin);
-      assert.equal(socket.protocol, "even-t3-v1");
-      const result = await rpc(socket, "origin-read", "sessions.list", {});
-      assert.equal(result.ok, true);
-      socket.close();
-    }
-    const disabled = await startServer();
-    const cases = [
-      ...[...rejectedEvenOrigins, undefined].map((origin) => ({ base, origin, token: BRIDGE_TOKEN })),
-      { base: disabled.base, origin: evenOrigins[3], token: BRIDGE_TOKEN },
-      { base, origin: evenOrigins[3], token: "wrong" },
-      { base, origin: evenOrigins[3], token: undefined },
-    ];
-    for (const entry of cases) {
-      await new Promise<void>((resolve, reject) => {
-        const socket = new WebSocket(`${entry.base.replace(/^http/, "ws")}/v1/events`, ["even-t3-v1", ...(entry.token === undefined ? [] : [`auth.${entry.token}`])], { origin: entry.origin });
-        const timeout = setTimeout(() => { socket.terminate(); reject(new Error("WebSocket rejection timed out")); }, 2000);
-        socket.on("error", () => {});
-        socket.once("open", () => { clearTimeout(timeout); socket.close(); reject(new Error("Unexpected accepted socket")); });
-        socket.once("unexpected-response", (request, response) => {
-          clearTimeout(timeout);
-          response.resume();
-          request.destroy();
-          try { assert.equal(response.statusCode, 401, String(entry.origin)); resolve(); } catch (error) { reject(error); }
-        });
-      });
-    }
-  });
-});
+}
 
 describe("HTTP boundary", () => {
-  it("accepts the explicit opaque WebView origin without allowing a missing origin", async () => {
-    const opaque = await startServer(new FakeT3Client(), new FakeTranscriber(), {
-      allowedOrigins: new Set(["null"]),
-      allowNoOrigin: false,
-    });
-    const paired = await fetch(`${opaque.base}/v1/pair`, {
-      method: "POST",
-      headers: { Origin: "null", "Content-Type": "application/json" },
-      body: JSON.stringify({ passphrase: "passphrase" }),
-    });
-    assert.equal(paired.status, 200);
-    const missing = await fetch(`${opaque.base}/v1/sessions`, {
-      headers: { Authorization: `Bearer ${BRIDGE_TOKEN}` },
-    });
-    assert.equal(missing.status, 403);
+  it("rejects every browser origin before authentication or T3 access", async () => {
+    const { base, client } = await startServer();
+    for (const response of [
+      await fetch(`${base}/health`, { headers: { Origin: BROWSER_ORIGIN } }),
+      await fetch(`${base}/v1/status`, { headers: { Origin: BROWSER_ORIGIN, Authorization: `Bearer ${BRIDGE_TOKEN}` } }),
+      ...await Promise.all([BROWSER_ORIGIN, "null", ...evenOrigins].map((origin) => pair(base, "passphrase", { Origin: origin }))),
+    ]) {
+      assert.equal(response.status, 403);
+      assert.equal(response.headers.get("access-control-allow-origin"), null);
+      assert.equal((await response.text()).includes(NATIVE_TOKEN), false);
+    }
+    assert.equal(client.shellCalls, 0);
   });
 
-  it("rejects missing auth before touching T3 and returns a safe error", async () => {
+  it("rejects missing owner auth before touching T3 and returns a safe error", async () => {
     const { base, client } = await startServer();
-    const response = await fetch(`${base}/v1/sessions`, { headers: { Origin: ORIGIN } });
+    const response = await fetch(`${base}/v1/status`);
     assert.equal(response.status, 401);
     assert.equal(client.shellCalls, 0);
     const body = (await response.json()) as { error: { code: string; message: string } };
     assert.deepEqual(body.error, { code: "unauthorized", message: "Authentication required" });
   });
 
-  it("rejects a disallowed browser origin even with a valid bearer", async () => {
-    const { base, client } = await startServer();
-    const response = await fetch(`${base}/v1/sessions`, {
-      headers: { Origin: "https://attacker.example", Authorization: `Bearer ${BRIDGE_TOKEN}` },
-    });
-    assert.equal(response.status, 403);
-    assert.equal(client.shellCalls, 0);
-    assert.equal(response.headers.get("access-control-allow-origin"), null);
-  });
-
-  it("returns only the normalized session view", async () => {
+  it("exchanges the passphrase for a native token that cannot act as the owner", async () => {
     const { base } = await startServer();
-    const response = await fetch(`${base}/v1/sessions`, {
-      headers: { Origin: ORIGIN, Authorization: `Bearer ${BRIDGE_TOKEN}` },
-    });
-    assert.equal(response.status, 200);
-    assert.equal(response.headers.get("access-control-allow-origin"), ORIGIN);
-    const raw = await response.text();
-    assert.equal(raw.includes("workspaceRoot"), false);
-    assert.equal(raw.includes("/private/repository/path"), false);
-  });
-
-  it("exchanges the configured passphrase for the current bearer token", async () => {
-    const { base } = await startServer();
-    const paired = await fetch(`${base}/v1/pair`, {
-      method: "POST",
-      headers: { Origin: ORIGIN, "Content-Type": "application/json" },
-      body: JSON.stringify({ passphrase: "passphrase" }),
-    });
+    const paired = await pair(base, "passphrase");
     assert.equal(paired.status, 200);
     assert.equal(paired.headers.get("cache-control"), "no-store");
-    assert.deepEqual(await paired.json(), { token: BRIDGE_TOKEN });
-
-    const authenticated = await fetch(`${base}/v1/sessions`, {
-      headers: { Origin: ORIGIN, Authorization: `Bearer ${BRIDGE_TOKEN}` },
-    });
-    assert.equal(authenticated.status, 200);
+    const { token } = (await paired.json()) as { token: string };
+    assert.equal(token, NATIVE_TOKEN);
+    assert.notEqual(token, BRIDGE_TOKEN);
+    const owner = await fetch(`${base}/v1/status`, { headers: { Authorization: `Bearer ${token}` } });
+    assert.equal(owner.status, 401);
   });
 
   it("returns the same generic failure for a wrong or disabled passphrase", async () => {
     const wrongServer = await startServer();
-    const wrong = await fetch(`${wrongServer.base}/v1/pair`, {
-      method: "POST",
-      headers: { Origin: ORIGIN, "Content-Type": "application/json" },
-      body: JSON.stringify({ passphrase: "wrong-passphrase" }),
-    });
+    const wrong = await pair(wrongServer.base, "wrong-passphrase");
     assert.equal(wrong.status, 401);
     const wrongBody = await wrong.text();
     assert.equal(wrongBody.includes("wrong-passphrase"), false);
-    assert.equal(wrongBody.includes(BRIDGE_TOKEN), false);
+    assert.equal(wrongBody.includes(NATIVE_TOKEN), false);
     assert.match(wrongBody, /"code":"pairing_failed","message":"Pairing failed"/);
 
-    const disabledServer = await startServer(
-      new FakeT3Client(),
-      new FakeTranscriber(),
-      { bridgePassphrase: null },
-    );
-    const disabled = await fetch(`${disabledServer.base}/v1/pair`, {
-      method: "POST",
-      headers: { Origin: ORIGIN, "Content-Type": "application/json" },
-      body: JSON.stringify({ passphrase: "wrong-passphrase" }),
-    });
+    const disabledServer = await startServer(new FakeT3Client(), new FakeTranscriber(), { bridgePassphrase: null });
+    const disabled = await pair(disabledServer.base, "wrong-passphrase");
     assert.equal(disabled.status, 401);
     const disabledBody = (await disabled.json()) as { error: unknown };
-    const parsedWrong = JSON.parse(wrongBody) as { error: unknown };
-    assert.deepEqual(disabledBody.error, parsedWrong.error);
-  });
-
-  it("denies pairing from an unapproved origin before checking the passphrase", async () => {
-    const { base } = await startServer();
-    const response = await fetch(`${base}/v1/pair`, {
-      method: "POST",
-      headers: {
-        Origin: "https://attacker.example",
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({ passphrase: "passphrase" }),
-    });
-    assert.equal(response.status, 403);
-    assert.equal(response.headers.get("access-control-allow-origin"), null);
-    assert.equal((await response.text()).includes(BRIDGE_TOKEN), false);
-  });
-
-  it("logs only bounded origin diagnostics for rejected pairing requests without secrets", async (context) => {
-    const { base, client } = await startServer();
-    const output: string[] = [];
-    const originalWrite = process.stdout.write.bind(process.stdout);
-    const write = context.mock.method(process.stdout, "write", (...args: Parameters<typeof process.stdout.write>) => {
-      if (!String(args[0]).startsWith('{"level":"info"')) return originalWrite(...args);
-      output.push(String(args[0]));
-      return true;
-    });
-    try {
-      for (const method of ["OPTIONS", "POST"]) {
-        const response = await fetch(`${base}/v1/pair?token=private-query-token`, {
-          method,
-          headers: {
-            Origin: "http://127.0.0.1:50496",
-            Authorization: "Bearer private-authorization-token",
-            "Content-Type": "application/json",
-            "Sec-WebSocket-Protocol": "auth.private-protocol-token",
-            "X-Request-Id": "private-untrusted-request-id",
-          },
-          ...(method === "POST" ? { body: JSON.stringify({ passphrase: "private-body-secret" }) } : {}),
-        });
-        assert.equal(response.status, 403);
-        assert.equal(response.headers.get("Access-Control-Allow-Origin"), null);
-        assert.equal((await response.json() as { error: { code: string } }).error.code, "origin_denied");
-      }
-    } finally {
-      write.mock.restore();
-    }
-    const logged = output.join("");
-    assert.equal(logged.includes("private-"), false);
-    const diagnostics = logged.trim().split("\n")
-      .map((line) => JSON.parse(line) as Record<string, unknown>)
-      .filter((entry) => entry.event === "pairing_origin_denied");
-    assert.equal(diagnostics.length, 2);
-    assert.deepEqual(diagnostics.map((entry) => entry.method), ["OPTIONS", "POST"]);
-    for (const entry of diagnostics) {
-      assert.deepEqual(Object.keys(entry).sort(), [
-        "at", "event", "level", "method", "origin", "path", "reason", "requestId", "status",
-      ]);
-      assert.equal(entry.origin, "http://127.0.0.1:50496");
-      assert.equal(entry.path, "/v1/pair");
-      assert.equal(entry.reason, "origin_denied");
-      assert.equal(entry.status, 403);
-    }
-    assert.equal(client.shellCalls, 0);
-  });
-
-  it("does not emit pairing origin diagnostics for approved origins or unrelated routes", async (context) => {
-    const { base } = await startServer();
-    const output: string[] = [];
-    const originalWrite = process.stdout.write.bind(process.stdout);
-    const write = context.mock.method(process.stdout, "write", (...args: Parameters<typeof process.stdout.write>) => {
-      if (!String(args[0]).startsWith('{"level":"info"')) return originalWrite(...args);
-      output.push(String(args[0]));
-      return true;
-    });
-    try {
-      const preflight = await fetch(`${base}/v1/pair`, { method: "OPTIONS", headers: { Origin: ORIGIN } });
-      assert.equal(preflight.status, 204);
-      assert.equal(preflight.headers.get("Access-Control-Allow-Origin"), ORIGIN);
-      const wrongPassphrase = await fetch(`${base}/v1/pair`, {
-        method: "POST",
-        headers: { Origin: ORIGIN, "Content-Type": "application/json" },
-        body: JSON.stringify({ passphrase: "private-wrong-passphrase" }),
-      });
-      assert.equal(wrongPassphrase.status, 401);
-      await wrongPassphrase.text();
-      const otherRoute = await fetch(`${base}/v1/sessions`, {
-        method: "OPTIONS", headers: { Origin: "https://denied.example" },
-      });
-      assert.equal(otherRoute.status, 403);
-      await otherRoute.text();
-    } finally {
-      write.mock.restore();
-    }
-    assert.equal(output.join("").includes("pairing_origin_denied"), false);
-    assert.equal(output.join("").includes("private-wrong-passphrase"), false);
+    assert.deepEqual(disabledBody.error, (JSON.parse(wrongBody) as { error: unknown }).error);
   });
 
   it("rate limits pairing independently after five attempts", async () => {
     const { base } = await startServer();
     for (let attempt = 0; attempt < 5; attempt += 1) {
-      const response = await fetch(`${base}/v1/pair`, {
-        method: "POST",
-        headers: { Origin: ORIGIN, "Content-Type": "application/json" },
-        body: JSON.stringify({ passphrase: "wrong" }),
-      });
-      assert.equal(response.status, 401);
+      assert.equal((await pair(base, "wrong")).status, 401);
     }
-    const limited = await fetch(`${base}/v1/pair`, {
-      method: "POST",
-      headers: { Origin: ORIGIN, "Content-Type": "application/json" },
-      body: JSON.stringify({ passphrase: "passphrase" }),
-    });
+    const limited = await pair(base, "passphrase");
     assert.equal(limited.status, 429);
     assert.match(await limited.text(), /"code":"pairing_failed","message":"Pairing failed"/);
   });
 
   it("rejects pairing bodies over the dedicated size limit", async () => {
     const { base } = await startServer();
-    const response = await fetch(`${base}/v1/pair`, {
-      method: "POST",
-      headers: { Origin: ORIGIN, "Content-Type": "application/json" },
-      body: JSON.stringify({ passphrase: "x".repeat(2048) }),
-    });
+    const response = await pair(base, "x".repeat(2048));
     assert.equal(response.status, 413);
     const body = await response.text();
     assert.equal(body.includes("passphrase"), false);
-    assert.equal(body.includes(BRIDGE_TOKEN), false);
+    assert.equal(body.includes(NATIVE_TOKEN), false);
+  });
+
+  it("has no Even Hub pairing, REST session or phone companion routes", async () => {
+    const { base, client } = await startServer();
+    const owner = { Authorization: `Bearer ${BRIDGE_TOKEN}`, "Content-Type": "application/json" };
+    for (const [method, path] of [["POST", "/v1/pair"], ["GET", "/v1/sessions"], ["POST", "/v1/sessions"],
+      ["GET", "/v1/projects"], ["POST", "/v1/phone/pair"], ["POST", "/v1/phone/sync"]] as const) {
+      const response = await fetch(`${base}${path}`, { method, headers: owner, ...(method === "POST" ? { body: "{}" } : {}) });
+      assert.equal(response.status, 404, path);
+      await response.json();
+    }
+    assert.equal(client.shellCalls + client.starts.length, 0);
   });
 });
 
@@ -1684,16 +1405,21 @@ describe("WebSocket RPC and voice boundary", () => {
     socket.close();
   });
 
-  it("rejects a bad WebSocket origin", async () => {
+  it("accepts only the native token on the native socket without a browser origin", async () => {
     const { base } = await startServer();
-    const url = base.replace(/^http/, "ws") + "/v1/events";
-    const socket = new WebSocket(url, ["even-t3-v1", `auth.${BRIDGE_TOKEN}`], {
-      origin: "https://attacker.example",
-    });
-    const status = await new Promise<number>((resolve) => {
-      socket.once("unexpected-response", (_request, response) => resolve(response.statusCode ?? 0));
-    });
-    assert.equal(status, 401);
+    const ws = base.replace(/^http/, "ws");
+    for (const [path, token, origin] of [
+      ["/v1/faceclaw/events", NATIVE_TOKEN, BROWSER_ORIGIN],
+      ["/v1/faceclaw/events", BRIDGE_TOKEN, undefined],
+      ["/v1/events", NATIVE_TOKEN, undefined],
+      ["/v1/events", BRIDGE_TOKEN, BROWSER_ORIGIN],
+    ] as const) {
+      const socket = new WebSocket(ws + path, ["even-t3-v1", `auth.${token}`], origin ? { origin } : {});
+      const status = await new Promise<number>((resolve) => {
+        socket.once("unexpected-response", (_request, response) => resolve(response.statusCode ?? 0));
+      });
+      assert.equal(status, 401, path);
+    }
   });
 
   it("returns a flat model catalog without T3 option or account details", async () => {
@@ -1817,14 +1543,7 @@ describe("WebSocket RPC and voice boundary", () => {
       }
       // Older ordinary clients may send a mode; it cannot override the server policy.
       assert.equal((await rpc(socket, "override", "thread.start", { ...params, runtimeMode: "approval-required" })).ok, true);
-      const http = await fetch(`${base}/v1/sessions`, {
-        method: "POST",
-        headers: { Origin: ORIGIN, Authorization: `Bearer ${BRIDGE_TOKEN}`, "Content-Type": "application/json" },
-        body: JSON.stringify({ ...params, runtimeMode: "approval-required" }),
-      });
-      assert.equal(http.status, 201);
-      await http.json();
-      assert.equal(client.starts.length, 4);
+      assert.equal(client.starts.length, 3);
       for (const started of client.starts) {
         assert.equal(started.runtimeMode, "full-access");
         assert.deepEqual(started.selection, params.modelSelection);
@@ -1835,25 +1554,6 @@ describe("WebSocket RPC and voice boundary", () => {
       assert.equal(client.sends[0]?.thread.runtimeMode, "approval-required");
       socket.close();
     }
-  });
-
-  it("rejects unauthenticated and disallowed-origin HTTP session creation before any T3 access", async () => {
-    const { base, client } = await startServer();
-    for (const [headers, expectedStatus] of [
-      [{ Origin: ORIGIN }, 401],
-      [{ Origin: "https://attacker.example", Authorization: `Bearer ${BRIDGE_TOKEN}` }, 403],
-    ] as const) {
-      const response = await fetch(`${base}/v1/sessions`, {
-        method: "POST",
-        headers: { ...headers, "Content-Type": "application/json" },
-        body: JSON.stringify({ projectId: project.id, text: "Do not send",
-          modelSelection: { instanceId: "codex", model: "gpt-5.6-sol" } }),
-      });
-      assert.equal(response.status, expectedStatus);
-      await response.json();
-    }
-    assert.equal(client.shellCalls, 0);
-    assert.equal(client.starts.length, 0);
   });
 
   it("rejects assistant permission overrides, malformed selections, and empty drafts before any T3 access", async () => {
@@ -1875,7 +1575,7 @@ describe("WebSocket RPC and voice boundary", () => {
     socket.close();
   });
 
-  it("retains project allowlisting and rejects deleted or missing projects for every new session route", async () => {
+  it("retains project allowlisting and rejects deleted or missing projects for every new session method", async () => {
     for (const blocked of ["allowlist", "deleted", "missing"] as const) {
       const client = new FakeT3Client({ ...shell, projects: blocked === "deleted"
         ? [{ ...project, deletedAt: "2026-09-05T00:00:00.000Z" }] : blocked === "missing" ? [] : [project] });
@@ -1889,13 +1589,6 @@ describe("WebSocket RPC and voice boundary", () => {
         assert.equal(result.ok, false);
         assert.deepEqual(result.error, { code: "not_found", message: "Project not found" });
       }
-      const response = await fetch(`${base}/v1/sessions`, {
-        method: "POST",
-        headers: { Origin: ORIGIN, Authorization: `Bearer ${BRIDGE_TOKEN}`, "Content-Type": "application/json" },
-        body: JSON.stringify(params),
-      });
-      assert.equal(response.status, 404);
-      await response.json();
       assert.equal(client.starts.length, 0);
       socket.close();
     }

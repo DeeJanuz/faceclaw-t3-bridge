@@ -1,4 +1,3 @@
-import { PhoneService, type PhoneSnapshot } from "./phone.js";
 import { SignalHttp } from './signal-http.js';
 import { FaceclawRelay, faceclawToken, mintToolToken, verifyToolToken } from './faceclaw.js';
 import { RefinementService } from './refinement.js';
@@ -7,7 +6,6 @@ import { AssistantArchive, type ArchiveStatus } from "./assistant-archive.js";
 import { createHash, randomUUID } from "node:crypto";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import { WebSocketServer, WebSocket, type RawData } from "ws";
-import { diagnosticOrigin } from "./pairing-diagnostics.js";
 import { WeatherService } from "./weather.js";
 import { SessionControlsService, freshAllowedThread, requireIdleSession } from "./session-controls.js";
 import { PlanInputService } from "./plan-input.js";
@@ -27,7 +25,6 @@ import {
   applySecurityHeaders,
   bearerToken,
   isSafeId,
-  originAllowed,
   parsePathId,
   parseText,
   pairingPassphraseMatches,
@@ -50,7 +47,6 @@ import type {
 
 const WS_PROTOCOL = "even-t3-v1";
 const MAX_WS_FRAME_BYTES = 64 * 1024;
-const MAX_WS_JSON_BYTES = 16 * 1024;
 const MAX_WS_SUBSCRIPTIONS = 8;
 const MAX_WS_BUFFERED_BYTES = 1024 * 1024;
 const MIN_VOICE_BYTES = 3200;
@@ -59,7 +55,6 @@ const PAIRING_ATTEMPTS_PER_WINDOW = 5;
 const PAIRING_WINDOW_MS = 5 * 60_000;
 
 interface VoiceRecording {
-  readonly phoneKey: string | null;
   phase: "recording" | "finishing";
   readonly chunks: Buffer[];
   bytes: number;
@@ -71,7 +66,6 @@ interface VoiceRecording {
 }
 
 interface SocketState {
-  nativeFaceclaw: boolean;
   refinement: AbortController | null;
   readonly socket: WebSocket;
   readonly subscriptions: Set<string>;
@@ -437,7 +431,6 @@ class EventHub {
 
   add(socket: WebSocket): SocketState {
     const state: SocketState = {
-      nativeFaceclaw: false,
       refinement: null,
       socket,
       subscriptions: new Set(),
@@ -456,18 +449,6 @@ class EventHub {
       status: "connected", protocol: WS_PROTOCOL, environments,
     }), () => sendEvent(state, "bridge.status", { status: "upstream-unavailable", protocol: WS_PROTOCOL }));
     return state;
-  }
-
-  phoneChanged(snapshot: PhoneSnapshot): void {
-    for (const state of this.states) {
-      const recording = state.voice;
-      if (recording?.phoneKey && (!snapshot.connected || !snapshot.notifications.some(item => item.key === recording.phoneKey))) {
-        recording.abortController.abort();
-        wipeRecording(recording);
-        state.voice = null;
-      }
-      sendEvent(state, "phone.changed", snapshot);
-    }
   }
 
   archiveStatus(status: ArchiveStatus): void {
@@ -690,19 +671,12 @@ async function routeRpc(
   transcriber: Transcriber,
   events: EventHub,
   services: BridgeServiceRegistry,
-  phone: PhoneService,
   environmentServices: (environmentId: string, client: T3Client) => {
     readonly plan: PlanInputService;
     readonly controls: SessionControlsService;
   },
 ): Promise<unknown> {
   switch (request.method) {
-    case "phone.pairing.create": return phone.createPairing();
-    case "phone.apps.list":
-    case "phone.notifications.list": return phone.snapshot();
-    case "phone.apps.setEnabled": return phone.setEnabled(request.params);
-    case "phone.notifications.reply": return phone.command("reply", request.params);
-    case "phone.notifications.dismiss": return phone.command("dismiss", request.params);
     case "environments.list":
       return { environments: await router.list() };
     case "sessions.list":
@@ -841,22 +815,10 @@ async function routeRpc(
       return aggregateMode ? withEnvironment(result, resolved.environment) : result;
     }
     case "voice.start": {
-      let phoneKey: string | null = null;
-      if (request.params.source !== undefined) {
-        if (request.params.source !== "phone" || typeof request.params.key !== "string" || request.params.key.length > 256) {
-          throw new ApiError(400, "invalid_request", "Invalid voice source");
-        }
-        const snapshot = phone.snapshot();
-        if (!snapshot.connected || !snapshot.notifications.some(item => item.key === request.params.key)) {
-          throw new ApiError(409, "phone_unavailable", "Phone notification is unavailable");
-        }
-        phoneKey = request.params.key;
-      }
       if (state.voice !== null) {
         throw new ApiError(409, "voice_active", "Dictation is already active");
       }
       state.voice = {
-        phoneKey,
         phase: "recording",
         chunks: [],
         bytes: 0,
@@ -931,75 +893,13 @@ async function routeHttp(
   config: BridgeConfig,
   router: T3EnvironmentRouter,
   aggregateMode: boolean,
-  pairingLimiter: FixedWindowRateLimiter,
   archive: AssistantArchive,
-  phone: PhoneService,
 ): Promise<number> {
   const url = new URL(request.url ?? "/", "http://bridge.invalid");
   const path = url.pathname;
 
-  // Native API is isolated from browser origin exemptions and full bridge credentials.
-  if (path.startsWith("/v1/phone/")) {
-    if (request.headers.origin !== undefined || request.method !== "POST" || url.search) {
-      throw new ApiError(403, "native_only", "Native phone endpoint required");
-    }
-    if (path === "/v1/phone/pair") {
-      if (!pairingLimiter.allow(clientKey(request))) throw new ApiError(429, "pairing_failed", "Pairing failed");
-      sendJson(response, 200, phone.pair(await readPairingBody(request)));
-      return 200;
-    }
-    if (!phone.authenticated(bearerToken(request))) throw new ApiError(401, "unauthorized", "Authentication required");
-    if (path === "/v1/phone/sync") {
-      sendJson(response, 200, phone.sync(await readJsonBody(request, 256 * 1024)));
-      return 200;
-    }
-    throw new ApiError(404, "not_found", "Route not found");
-  }
-
-  if (request.method === "OPTIONS") {
-    if (!originAllowed(request, config)) {
-      throw new ApiError(403, "origin_denied", "Origin is not allowed");
-    }
-    response.writeHead(204, {
-      "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
-      "Access-Control-Allow-Headers": "Authorization, Content-Type",
-      "Access-Control-Max-Age": "600",
-    });
-    response.end();
-    return 204;
-  }
-
   if (request.method === "GET" && path === "/health") {
     sendJson(response, 200, { status: "ok" });
-    return 200;
-  }
-
-  if (!originAllowed(request, config)) {
-    throw new ApiError(403, "origin_denied", "Origin is not allowed");
-  }
-
-  if (request.method === "POST" && path === "/v1/pair") {
-    if (!pairingLimiter.allow(clientKey(request))) {
-      throw new ApiError(429, "pairing_failed", "Pairing failed");
-    }
-    let body: Record<string, unknown>;
-    try {
-      body = await readPairingBody(request);
-    } catch (error) {
-      if (error instanceof ApiError && error.status === 413) throw error;
-      throw new ApiError(401, "pairing_failed", "Pairing failed");
-    }
-    const passphrase =
-      Object.keys(body).length === 1 &&
-      typeof body.passphrase === "string" &&
-      body.passphrase.length > 0 &&
-      body.passphrase.length <= 256
-        ? body.passphrase
-        : undefined;
-    if (!pairingPassphraseMatches(passphrase, config.bridgePassphrase)) {
-      throw new ApiError(401, "pairing_failed", "Pairing failed");
-    }
-    sendJson(response, 200, { token: config.bridgeToken });
     return 200;
   }
 
@@ -1035,79 +935,6 @@ async function routeHttp(
     return 200;
   }
 
-  if (request.method === "GET" && path === "/v1/projects") {
-    const environmentId = url.searchParams.get("environmentId") ?? undefined;
-    if (environmentId === undefined && aggregateMode) sendJson(response, 200, await aggregateProjects(router, config));
-    else {
-      if (environmentId !== undefined && !isSafeId(environmentId)) throw new ApiError(400, "invalid_request", "environmentId must be a valid identifier");
-      const resolved = await router.resolve(environmentId);
-      const snapshot = await resolved.client.shell();
-      sendJson(response, 200, { snapshotId: String(snapshot.snapshotSequence),
-        projects: normalizeProjects(snapshot, config, aggregateMode ? resolved.environment : undefined) });
-    }
-    return 200;
-  }
-
-  if (request.method === "GET" && path === "/v1/sessions") {
-    const environmentId = url.searchParams.get("environmentId") ?? undefined;
-    if (environmentId === undefined && aggregateMode) sendJson(response, 200, await aggregateSessions(router, config));
-    else {
-      if (environmentId !== undefined && !isSafeId(environmentId)) throw new ApiError(400, "invalid_request", "environmentId must be a valid identifier");
-      const resolved = await router.resolve(environmentId);
-      sendJson(response, 200, normalizeSessions(await resolved.client.shell(), config,
-        aggregateMode ? resolved.environment : undefined));
-    }
-    return 200;
-  }
-
-  const transcriptMatch = /^\/v1\/sessions\/([^/]+)\/transcript$/.exec(path);
-  if (request.method === "GET" && transcriptMatch !== null) {
-    const environmentId = url.searchParams.get("environmentId") ?? undefined;
-    if (environmentId !== undefined && !isSafeId(environmentId)) throw new ApiError(400, "invalid_request", "environmentId must be a valid identifier");
-    const resolved = await router.resolve(environmentId);
-    const client = resolved.client;
-    const threadId = parsePathId(transcriptMatch[1]);
-    const shell = await client.shell();
-    findThread(shell, threadId, config);
-    const snapshot = await client.thread(threadId);
-    if (snapshot.thread.id !== threadId) {
-      throw new ApiError(502, "upstream_invalid_response", "T3 Code returned an invalid response");
-    }
-    const projectTitle =
-      shell.projects.find((project) => project.id === snapshot.thread.projectId)?.title ??
-      "Unknown project";
-    sendJson(response, 200, normalizeTranscript(snapshot, projectTitle, aggregateMode ? resolved.environment : undefined));
-    return 200;
-  }
-
-  if (request.method === "POST" && path === "/v1/sessions") {
-    const body = await readJsonBody(request, config.maxBodyBytes);
-    const resolved = await router.resolve(requestedEnvironmentId(body));
-    const result = await startThread(
-      resolved.client,
-      config,
-      requiredId(body, "projectId"),
-      parseText(body, config.maxTextChars),
-      parseModelSelection(body),
-    );
-    sendJson(response, 201, aggregateMode ? withEnvironment(result, resolved.environment) : result);
-    return 201;
-  }
-
-  const messageMatch = /^\/v1\/sessions\/([^/]+)\/messages$/.exec(path);
-  if (request.method === "POST" && messageMatch !== null) {
-    const body = await readJsonBody(request, config.maxBodyBytes);
-    const resolved = await router.resolve(requestedEnvironmentId(body));
-    const result = await sendTurn(
-      resolved.client,
-      config,
-      parsePathId(messageMatch[1]),
-      parseText(body, config.maxTextChars),
-    );
-    sendJson(response, 202, aggregateMode ? withEnvironment(result, resolved.environment) : result);
-    return 202;
-  }
-
   throw new ApiError(404, "not_found", "Route not found");
 }
 
@@ -1137,13 +964,6 @@ export function createBridgeServer(
     PAIRING_WINDOW_MS,
   );
   const events = new EventHub(router, config, aggregateMode);
-  const phone = new PhoneService(config.bridgeToken, (snapshot) => events.phoneChanged(snapshot), 6000, 10_000, async () => {
-    // Native wake relays receive no titles, transcripts, project paths or T3 action authority.
-    return aggregateMode
-      ? (await aggregateSessions(router, config)).unsettled
-      : normalizeSessions(await client.shell(), config).unsettled;
-  });
-  const phoneLimiter = new FixedWindowRateLimiter(240);
   const archive = new AssistantArchive(config, client, (status) => events.archiveStatus(status));
   const weather = new WeatherService();
   const scopedServices = new Map<string, {
@@ -1181,23 +1001,29 @@ export function createBridgeServer(
 
   const server = createServer((request, response) => {
     const requestId = safeRequestId();
-    applySecurityHeaders(request, response, config);
+    applySecurityHeaders(response);
     response.setHeader("X-Request-Id", requestId);
     let status = 500;
     void (async () => {
       try {
         if (peers && await peers.http(request, response)) { status = response.statusCode; return; }
-        const isPhoneSync = request.url === "/v1/phone/sync";
-        if (!(isPhoneSync ? phoneLimiter : limiter).allow(clientKey(request))) {
+        if (!limiter.allow(clientKey(request))) {
           throw new ApiError(429, "rate_limited", "Too many requests");
         }
         const url = new URL(request.url ?? '/', 'http://bridge.invalid');
+        // The optional Signal service applies its own policy: an exact
+        // same-origin page for loopback setup, and no Origin for its APK API.
         if (signal) {
           const handled = await signal.handle(request, response, url);
           if (handled !== null) { status = handled; return; }
         }
+        // Otherwise only native Faceclaw clients and local owner tools connect.
+        // Browser origins have no route on this bridge.
+        if (request.headers.origin !== undefined) {
+          throw new ApiError(403, "native_only", "Browser origins are not accepted");
+        }
         if (url.pathname.startsWith('/v1/faceclaw/')) {
-          if (request.headers.origin !== undefined || request.method !== 'POST' || url.search) {
+          if (request.method !== 'POST' || url.search) {
             throw new ApiError(403, 'native_only', 'Native Faceclaw endpoint required');
           }
           if (url.pathname === '/v1/faceclaw/pair') {
@@ -1263,7 +1089,7 @@ export function createBridgeServer(
           }
           throw new ApiError(404, 'not_found', 'Route not found');
         }
-        status = await routeHttp(request, response, config, router, aggregateMode, pairingLimiter, archive, phone);
+        status = await routeHttp(request, response, config, router, aggregateMode, archive);
       } catch (error) {
         if (response.headersSent || response.destroyed) return;
         const safe =
@@ -1271,32 +1097,13 @@ export function createBridgeServer(
             ? error
             : new ApiError(500, "internal_error", "The bridge could not complete the request");
         status = safe.status;
-        // Temporary, rejection-only pairing diagnostics. Do not log other headers,
-        // request bodies, raw URLs, or any authentication material.
-        if (
-          safe.code === "origin_denied" &&
-          (request.method === "OPTIONS" || request.method === "POST") &&
-          new URL(request.url ?? "/", "http://bridge.invalid").pathname === "/v1/pair"
-        ) {
-          process.stdout.write(`${JSON.stringify({
-            level: "info",
-            event: "pairing_origin_denied",
-            requestId,
-            method: request.method,
-            path: "/v1/pair",
-            status,
-            reason: "origin_denied",
-            origin: diagnosticOrigin(request.headers.origin),
-            at: new Date().toISOString(),
-          })}\n`);
-        }
         if (safe.status === 401) response.setHeader("WWW-Authenticate", "Bearer");
         sendJson(response, safe.status, {
           error: { code: safe.code, message: safe.message },
           requestId,
         });
       } finally {
-        if (request.url !== "/v1/phone/sync") logRequest(
+        logRequest(
           requestId,
           request.method ?? "UNKNOWN",
           request.url?.split("?", 1)[0] ?? "/",
@@ -1309,11 +1116,10 @@ export function createBridgeServer(
   server.on("upgrade", (request, socket, head) => {
     if (peers?.upgrade(request, socket, head)) return;
     const url = new URL(request.url ?? "/", "http://bridge.invalid");
-    const native = url.pathname === '/v1/faceclaw/events';
     if (
-      (native ? request.headers.origin !== undefined || !!url.search : url.pathname !== "/v1/events" || !originAllowed(request, config)) ||
+      url.pathname !== "/v1/faceclaw/events" || request.headers.origin !== undefined || !!url.search ||
       !limiter.allow(clientKey(request)) ||
-      !secretMatches(websocketToken(request), native ? nativeToken : config.bridgeToken)
+      !secretMatches(websocketToken(request), nativeToken)
     ) {
       socket.write("HTTP/1.1 401 Unauthorized\r\nConnection: close\r\n\r\n");
       socket.destroy();
@@ -1338,9 +1144,7 @@ export function createBridgeServer(
 
   websocketServer.on("connection", (socket, handshake) => {
     const state = events.add(socket);
-    state.nativeFaceclaw = new URL(handshake.url ?? '/', 'http://bridge.invalid').pathname === '/v1/faceclaw/events';
     sendEvent(state, "archive.status", archive.status());
-    sendEvent(state, "phone.changed", phone.snapshot());
     socket.on("pong", () => {
       state.alive = true;
     });
@@ -1377,7 +1181,7 @@ export function createBridgeServer(
       }
 
       const textData = rawDataBuffer(data);
-      if (textData.byteLength > (state.nativeFaceclaw ? MAX_WS_FRAME_BYTES : MAX_WS_JSON_BYTES)) {
+      if (textData.byteLength > MAX_WS_FRAME_BYTES) {
         socket.close(1009, "Request is too large");
         return;
       }
@@ -1389,11 +1193,10 @@ export function createBridgeServer(
         return;
       }
       const dispatch = async (): Promise<unknown> => {
-        if (state.nativeFaceclaw && request.method !== 'refinement.cancel' && !['faceclaw.tools.result','faceclaw.capabilities.result'].includes(request.method) && !faceclawRpcLimiter.allow(clientKey(handshake))) {
+        if (request.method !== 'refinement.cancel' && !['faceclaw.tools.result','faceclaw.capabilities.result'].includes(request.method) && !faceclawRpcLimiter.allow(clientKey(handshake))) {
           throw new ApiError(429, 'rate_limited', 'Too many Faceclaw requests');
         }
         if (request.method.startsWith('faceclaw.') || request.method.startsWith('refinement.')) {
-          if (!state.nativeFaceclaw) throw new ApiError(403, 'native_only', 'Faceclaw connection required');
           switch (request.method) {
             case 'faceclaw.tools.register': return relay.register(state, request.params, payload => sendEvent(state, 'faceclaw.tool.call', payload));
             case 'faceclaw.tools.result': return relay.result(state, request.params);
@@ -1413,7 +1216,7 @@ export function createBridgeServer(
             default: throw new ApiError(404, 'method_not_found', 'Method not found');
           }
         }
-        return routeRpc(request, state, config, router, aggregateMode, transcriber, events, services, phone, environmentServices);
+        return routeRpc(request, state, config, router, aggregateMode, transcriber, events, services, environmentServices);
       };
       void dispatch().then(
         (result) => sendRpcResult(state, request.id, result),
@@ -1431,7 +1234,6 @@ export function createBridgeServer(
     peers?.close();
     signal?.close();
     archive.stop();
-    phone.close();
     clearInterval(heartbeat);
     websocketServer.close();
   });

@@ -42,10 +42,9 @@ test('configuration enforces authenticated private defaults and endpoint output 
   const config = { bridgePort: 8787, host: 'computer.example.ts.net', httpsPort: 8443, t3BaseDir: root, t3Executable: path.join(root, 'T3'), t3Entry: path.join(root, 'bin.mjs'), whisperModel: path.join(root, 'model.bin') };
   const env = bridgeEnvironment(config);
   assert.equal(env.BRIDGE_HOST, '127.0.0.1');
-  assert.equal(env.BRIDGE_ALLOW_NO_ORIGIN, 'false');
-  assert.equal(env.BRIDGE_ALLOWED_ORIGINS, 'null');
+  assert.equal(Object.keys(env).some((key) => key.includes('ORIGIN')), false);
   assert.equal(env.BRIDGE_RUNTIME_MODE, 'approval-required');
-  assert.deepEqual(connectionInfo(config), { evenHubBridgeUrl: 'wss://computer.example.ts.net:8443/v1/events', androidBridgeUrl: 'https://computer.example.ts.net:8443' });
+  assert.deepEqual(connectionInfo(config), { t3BridgeUrl: 'wss://computer.example.ts.net:8443/v1/faceclaw/events' });
 });
 test('portable installation carries the explicit Codex path into the isolated refinement environment', () => {
   const config = {
@@ -107,19 +106,21 @@ test('isolated macOS runtime layout can import the launcher without the source c
   } finally { await rm(directory, { recursive: true, force: true }); }
 });
 test('installation verifies its own pairing token and unauthorized failure before exposure', async () => {
-  const { verifyLocalPairing } = await import('./portable-deployment.mjs');
+  const { nativeToken, verifyLocalPairing } = await import('./portable-deployment.mjs');
   const credentials = { bridgeToken: 'test-token', pairingPassphrase: 'test-passphrase' };
+  // Vector from faceclawToken('test-token') in bridge/src/faceclaw.ts.
+  assert.equal(nativeToken(credentials.bridgeToken), 'mJx6JZZmK7ITXnN5R_q3zrC34bly825DcA4d62fzQT0');
   const calls = [];
   await verifyLocalPairing(8787, credentials, async (url, options) => {
     calls.push({ url, options });
-    return url.endsWith('/v1/pair') ? Response.json({ token: credentials.bridgeToken }) : new Response('', { status: 401 });
+    return url.endsWith('/v1/faceclaw/pair') ? Response.json({ token: nativeToken(credentials.bridgeToken) }) : new Response('', { status: 401 });
   });
-  assert.equal(calls[0].url, 'http://127.0.0.1:8787/v1/pair');
+  assert.equal(calls[0].url, 'http://127.0.0.1:8787/v1/faceclaw/pair');
   assert.equal(calls[0].options.redirect, 'error');
-  assert.equal(calls[0].options.headers.Origin, 'null');
+  assert.equal(calls[0].options.headers.Origin, undefined);
   assert.equal(calls[0].options.body, JSON.stringify({ passphrase: credentials.pairingPassphrase }));
-  await assert.rejects(() => verifyLocalPairing(8787, credentials, async () => Response.json({ token: 'foreign' })), /unexpected token/);
-  await assert.rejects(() => verifyLocalPairing(8787, credentials, async () => Response.json({ token: credentials.bridgeToken })), /require authentication/);
+  await assert.rejects(() => verifyLocalPairing(8787, credentials, async () => Response.json({ token: credentials.bridgeToken })), /unexpected token/);
+  await assert.rejects(() => verifyLocalPairing(8787, credentials, async () => Response.json({ token: nativeToken(credentials.bridgeToken) })), /require authentication/);
 });
 test('T3 Electron archive entry validates its container without asking native Node to traverse ASAR', async () => {
   const { resolveT3Entry } = await import('./portable-deployment.mjs');
@@ -137,7 +138,7 @@ test('installer and prerequisite help are read-only and available on every host'
   const { execFile } = await import('node:child_process');
   const { promisify } = await import('node:util');
   const { fileURLToPath } = await import('node:url');
-  for (const script of ['scripts/install-portable.mjs', 'scripts/portable-info.mjs', 'scripts/package-evenhub.mjs', 'bridge/scripts/setup-whisper.mjs']) {
+  for (const script of ['scripts/install-portable.mjs', 'scripts/portable-info.mjs', 'bridge/scripts/setup-whisper.mjs']) {
     const { stdout, stderr } = await promisify(execFile)(process.execPath, [fileURLToPath(new URL('../' + script, import.meta.url)), '--help'], { env: { ...process.env, PATH: '' } });
     assert.match(stdout, /Usage:/);
     assert.equal(stderr, '');
@@ -146,6 +147,7 @@ test('installer and prerequisite help are read-only and available on every host'
 test('provider check authenticates private endpoints and verifies synthetic inference without user messages', async () => {
   const { EventEmitter } = await import('node:events');
   const { verifyProviders } = await import('./provider-check.mjs');
+  const { nativeToken } = await import('./portable-deployment.mjs');
   const calls = [];
   let finish = { result: { text: 'unused synthetic result' } };
   class FakeSocket extends EventEmitter {
@@ -162,13 +164,16 @@ test('provider check authenticates private endpoints and verifies synthetic infe
     assert.equal(url, 'https://computer.example.ts.net:8443/v1/status');
     assert.equal(options.redirect, 'error');
     assert.equal(options.headers.Authorization, 'Bearer secret-test-token');
+    assert.equal(options.headers.Origin, undefined);
     return new Response('private upstream details', { status: 200 });
   } };
   const config = { host: 'computer.example.ts.net', httpsPort: 8443 };
   const result = await verifyProviders(config, 'secret-test-token', dependencies);
   assert.equal(result.t3, 'ready');
   assert.doesNotMatch(JSON.stringify(result), /secret|unused|private upstream/);
-  assert.deepEqual(calls[0].protocols, ['even-t3-v1', 'auth.secret-test-token']);
+  assert.equal(calls[0].url, 'wss://computer.example.ts.net:8443/v1/faceclaw/events');
+  assert.deepEqual(calls[0].protocols, ['even-t3-v1', `auth.${nativeToken('secret-test-token')}`]);
+  assert.equal(calls[0].options.origin, undefined);
   assert.ok(calls.includes('closed'));
   finish = { error: { code: 'transcription_unavailable', message: 'private failure detail' } };
   await assert.rejects(() => verifyProviders(config, 'secret-test-token', dependencies), /^Error: Local Whisper inference check failed$/);

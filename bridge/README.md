@@ -1,8 +1,8 @@
-# T3 Code Assistant Bridge server
+# Faceclaw T3 Bridge server
 
-Local, authenticated bridge for the Even Hub dashboard, an Android notification companion, and the T3 Code environments available through the host's T3 Connect account. The bridge exposes project/session reads, a reduced provider/model catalog, transcript reads, turn sends and steering, bounded activity summaries, voice transcription, and public weather lookups. It never exposes T3 filesystem, terminal, approval, account, or auth-management APIs. Speech recognition runs locally through whisper.cpp. No API key or cloud transcription service is required.
+Local, authenticated bridge between the Faceclaw T3 app and the T3 Code environments on this computer and its explicitly paired peers. The bridge exposes project/session reads, a reduced provider/model catalog, transcript reads, turn sends and steering, bounded activity summaries, voice transcription, and public weather lookups. It never exposes T3 filesystem, terminal, approval, account, or auth-management APIs. Speech recognition runs locally through whisper.cpp. No API key or cloud transcription service is required.
 
-The optional [Faceclaw integration](../docs/faceclaw.md) adds a separate native endpoint, on-demand Luna refinement, and a project-scoped Codex provider launcher for phone/glasses tools. Existing Hub and companion clients retain their routes and credential boundaries. Use the isolated Faceclaw fixture for emulator UI testing before selecting the new provider in T3.
+Phones connect only through the native Faceclaw endpoint. The [Faceclaw integration guide](../docs/faceclaw.md) covers its transport, on-demand Luna refinement, the project-scoped Codex provider launcher for glasses tools, and the isolated fixture for emulator UI testing. The optional [Signal service](../docs/signal.md) serves the Signal APK's legacy bridge mode.
 
 ### Public Faceclaw capability relay
 
@@ -30,15 +30,14 @@ can use it for explicit provider choice, profile matching, and audit displays.
 
 ## Security model
 
-The Even Hub WebView is an untrusted network client. The bridge holds the T3 credential and returns a reduced data model. It omits workspace paths, attachments, raw activity and tool payloads, tool results, and upstream error bodies. Live activity may include a bounded, redacted label such as an exact command preview. Transcript message text remains sensitive because showing it is the app's purpose.
+The phone is an untrusted network client. The bridge holds the T3 credential and returns a reduced data model. It omits workspace paths, attachments, raw activity and tool payloads, tool results, and upstream error bodies. Live activity may include a bounded, redacted label such as an exact command preview. Transcript message text remains sensitive because showing it is the app's purpose.
 
 Defaults are deliberately narrow:
 
-- Bind `127.0.0.1` only.
-- Require a 32-character or longer base64url `BRIDGE_TOKEN` for HTTP and WebSocket.
-- Keep `BRIDGE_PASSPHRASE` opt-in. Pairing exchanges it for the bearer token through an origin-checked, rate-limited endpoint and never stores it on the phone.
-- Deny requests with no `Origin` header. Set `BRIDGE_ALLOW_NO_ORIGIN=true` only for a trusted non-browser client.
-- Require exact origins by default. Wildcards are rejected. The macOS installer explicitly enables the bounded Even loopback-origin exception described below.
+- Bind a loopback address only. Startup fails for any other `BRIDGE_HOST`.
+- Require a 32-character or longer base64url owner `BRIDGE_TOKEN`. It stays on the computer for local tools, the provider launcher, and owner-only HTTP routes.
+- Keep `BRIDGE_PASSPHRASE` opt-in. Pairing exchanges it through a rate-limited endpoint for a separate native token derived from the owner token. The native token cannot authenticate owner routes, provider provisioning, or MCP tools. The phone never stores the passphrase.
+- Reject every request that carries a browser `Origin` header. No browser client has a route on this bridge.
 - Start new T3 sessions in `approval-required` mode.
 - Validate every new-session provider, model, and reasoning choice against a fresh T3 catalog before creating the thread.
 - Force normal speed with `serviceTier: "default"` or `fastMode: false` when the selected model supports that setting.
@@ -48,11 +47,11 @@ Defaults are deliberately narrow:
 - Launch whisper.cpp on `127.0.0.1` with a random request path and no `ffmpeg` conversion. Every inference request sets `no_context=true`.
 - Suppress whisper-server output so dictated text does not enter bridge logs.
 
-Do not put `BRIDGE_TOKEN` or `T3_ACCESS_TOKEN` in app source, `app.json`, `VITE_*` variables, or the `.ehpk`. Enter the bridge URL and pairing passphrase at runtime through the companion-app setup UI. The phone discards the passphrase and stores the returned bearer token. Treat that stored token as a bearer credential.
+Do not put `BRIDGE_TOKEN` or `T3_ACCESS_TOKEN` in app source or APK builds. Enter the bridge URL and pairing passphrase at runtime in the T3 app's settings. The phone discards the passphrase and stores the returned native token. Treat that stored token as a bearer credential.
 
 ## Optional assistant archive
 
-The optional assistant archive is supported on macOS and Linux only. Its filesystem protections require POSIX ownership checks, no-follow file opens, and directory synchronization. Windows rejects archive configuration before accessing files; leave `BRIDGE_ARCHIVE_PROJECT_ID` and `BRIDGE_ARCHIVE_WORKSPACE_ROOT` unset there. T3 access, notifications, weather, and local voice transcription remain available on Windows.
+The optional assistant archive is supported on macOS and Linux only. Its filesystem protections require POSIX ownership checks, no-follow file opens, and directory synchronization. Windows rejects archive configuration before accessing files; leave `BRIDGE_ARCHIVE_PROJECT_ID` and `BRIDGE_ARCHIVE_WORKSPACE_ROOT` unset there. T3 access, weather, and local voice transcription remain available on Windows.
 
 ## Install and run
 
@@ -70,7 +69,7 @@ Use the [installer skill](../skills/t3-bridge-deploy/SKILL.md) for automated Win
 ./scripts/service.sh status
 ```
 
-The interactive installer keeps long-lived credentials in private user-only files outside the repository, configures private Tailscale HTTPS, installs the login LaunchAgent, starts the managed Whisper listener, and creates a user-specific Even Hub package. See the root [`README.md`](../README.md) for packaging and beta-install steps.
+The interactive installer keeps long-lived credentials in private user-only files outside the repository, configures private Tailscale HTTPS, installs the login LaunchAgent, starts the managed Whisper listener, and prints the T3 bridge URL. See the root [`README.md`](../README.md) for phone setup.
 
 The commands below are the manual development path.
 
@@ -82,7 +81,6 @@ export BRIDGE_TOKEN="$(openssl rand -base64 32 | tr '+/' '-_' | tr -d '=')"
 read -r -s "BRIDGE_PASSPHRASE?Pairing passphrase: "
 printf '\n'
 export BRIDGE_PASSPHRASE
-export BRIDGE_ALLOWED_ORIGINS="http://localhost:5178"
 npm run start:t3
 ```
 
@@ -90,7 +88,7 @@ The hidden prompt keeps the passphrase out of shell history. Unset `BRIDGE_PASSP
 
 `setup:whisper` installs the Homebrew `whisper-cpp` formula when needed. It downloads `ggml-base.en.bin` to `~/Library/Application Support/Even T3 Bridge/models/`, caps the download at its expected size, and checks its published SHA-256 before installation. An existing model with the wrong digest is never overwritten automatically.
 
-`start:t3` is the recommended macOS path. It starts the bridge immediately and supervises T3 and whisper.cpp independently. Missing or unavailable providers do not stop the phone inbox. T3 readiness and local Whisper startup retry every ten seconds without dropping the Even or phone connection.
+`start:t3` is the recommended macOS path. It starts the bridge immediately and supervises T3 and whisper.cpp independently. Missing or unavailable providers do not stop the bridge from listening. T3 readiness and local Whisper startup retry every ten seconds without dropping the phone connection.
 
 The launcher finds `T3 Code.app` or `T3 Code (Alpha).app`, creates a two-minute one-time pairing credential, and exchanges it for a bearer token with only `orchestration:read orchestration:operate`. It validates the authenticated descriptor before enabling local T3 methods. That credential stays in the bridge process and is revoked on refresh or graceful shutdown.
 
@@ -98,7 +96,7 @@ The launcher authenticates only to its local T3 server. When peer federation is 
 
 The catalog includes the local primary and enrolled peers (`kind: "peer"`). Imported environments are never re-exported. T3 desktop-only connection profiles are not scraped. Assistant archives, Faceclaw tool grants, and generated provider launchers remain restricted to the local primary environment.
 
-T3 CLI and Whisper child environments exclude bridge and T3 secrets. Managed Whisper listens on numeric loopback with an unguessable request path. Missing transcription produces a temporary-unavailable error while notification reading stays available. Set `T3_APP_PATH`, `WHISPER_CPP_SERVER_PATH`, or `WHISPER_MODEL_PATH` when those files live elsewhere.
+T3 CLI and Whisper child environments exclude bridge and T3 secrets. Managed Whisper listens on numeric loopback with an unguessable request path. Missing transcription produces a temporary-unavailable error while T3 actions stay available. Set `T3_APP_PATH`, `WHISPER_CPP_SERVER_PATH`, or `WHISPER_MODEL_PATH` when those files live elsewhere.
 
 The wrapper uses `~/.t3` by default. Set `T3_BASE_DIR` only when the running T3 environment uses another state directory. An ungraceful machine or process kill may prevent revocation. Check T3 Code's authorized clients after a crash and revoke any `even-t3-bridge-*` session.
 
@@ -108,18 +106,17 @@ Windows and Linux use the [portable installer](../skills/t3-bridge-deploy/refere
 export T3_ACCESS_TOKEN="..."
 export T3_BASE_URL="http://127.0.0.1:3773"
 export BRIDGE_TOKEN="..."
-export BRIDGE_ALLOWED_ORIGINS="https://your-app-origin.example"
 whisper-server --host 127.0.0.1 --port 8178 --request-path /even-t3 --model /absolute/path/to/ggml-base.en.bin
 export WHISPER_SERVER_URL="http://127.0.0.1:8178/even-t3/inference"
 npm run build
 npm start
 ```
 
-For phone-only use with `npm start`, `T3_ACCESS_TOKEN` may be omitted. This selects an explicitly unavailable T3 provider and makes no T3 request with placeholder credentials.
+To test pairing and transport without T3, `T3_ACCESS_TOKEN` may be omitted with `npm start`. This selects an explicitly unavailable T3 provider and makes no T3 request with placeholder credentials.
 
 The glasses choose a live provider, model, and optional reasoning level for each new session. A project does not need a stored default model.
 
-## Tailscale and Even Hub networking
+## Tailscale networking
 
 Keep the bridge on loopback and put Tailscale Serve in front of it:
 
@@ -127,46 +124,17 @@ Keep the bridge on loopback and put Tailscale Serve in front of it:
 tailscale serve --bg --https=8443 localhost:8787
 ```
 
-Use the resulting `https://<machine>.<tailnet>.ts.net:8443` and `wss://<machine>.<tailnet>.ts.net:8443/v1/events` URLs. Do not use Tailscale Funnel or expose this bridge to the public internet.
-
-The Even Hub manifest needs a `network` permission whose whitelist contains the exact HTTPS and WSS bridge origins. Even Hub's whitelist does not bypass browser CORS. The bridge separately checks the WebView's `Origin` header through `BRIDGE_ALLOWED_ORIGINS`.
-
-```json
-{
-  "name": "network",
-  "desc": "Connects to the user's private T3 Code bridge.",
-  "whitelist": [
-    "https://machine.tailnet.ts.net:8443",
-    "wss://machine.tailnet.ts.net:8443"
-  ]
-}
-```
-
-Find the actual WebView origin in simulator or device network logs and configure that exact value. Multiple origins are comma-separated. Packaged WebViews may report `Origin: null`; allow the literal `null` only after verifying the device behavior.
-
-The installed Even app was also observed using `http://127.0.0.1:43751` as its page origin. Set `BRIDGE_ALLOW_EVEN_LOOPBACK_ORIGIN=true` to allow the exact HTTP address `127.0.0.1` with any valid port, so a changing phone-local port does not require server reconfiguration. The standalone bridge defaults this setting to `false`; the macOS installer enables it. The same rule applies to HTTP, CORS responses, and WebSocket upgrades. Alternate IP spellings, other hosts, URL credentials, paths, and malformed ports do not qualify. This is separate from the destination whitelist in the Hub package.
-
-A loopback origin does not authenticate the Even app. Passphrase/token authentication and rate limits remain required, and the bridge must remain privately reachable over Tailscale.
-
-Direct LAN mode is available when Tailscale Serve cannot be used:
-
-```bash
-export BRIDGE_HOST="0.0.0.0"
-export BRIDGE_ALLOWED_ORIGINS="https://your-exact-app-origin.example"
-npm run start:t3
-```
-
-Non-loopback startup fails without an origin allowlist. Plain HTTP and WS expose the bridge token and transcripts to the LAN, so use a TLS reverse proxy or a trusted private network.
+Enter `wss://<machine>.<tailnet>.ts.net:8443/v1/faceclaw/events` as the bridge URL in the T3 app. Do not use Tailscale Funnel or expose this bridge to the public internet. Direct LAN listening is not supported.
 
 ## WebSocket protocol
 
-Connect to `/v1/events` with both subprotocols:
+Connect to `/v1/faceclaw/events` without an `Origin` header, using the native token from pairing and both subprotocols:
 
 ```ts
-new WebSocket(bridgeUrl, ["even-t3-v1", `auth.${bridgeToken}`]);
+new WebSocket(bridgeUrl, ["even-t3-v1", `auth.${nativeToken}`]);
 ```
 
-The bridge authenticates `auth.<token>` but selects and echoes only `even-t3-v1`. Non-browser clients may send `Authorization: Bearer <token>` instead. Query-string tokens are not supported.
+The bridge authenticates `auth.<token>` but selects and echoes only `even-t3-v1`. Clients may send `Authorization: Bearer <token>` instead. Query-string tokens are not supported. Native-only methods (`faceclaw.*`, `refinement.*`) are listed in the [integration guide](../docs/faceclaw.md#native-transport).
 
 Request:
 
@@ -192,7 +160,7 @@ Methods:
 - `environments.list {}` returns the secret-free catalog with each environment's ID, label, source kind, status, primary flag, and server version when available.
 - T3 resource and mutation methods accept an optional `environmentId`: `models.list`, `transcript.get`, `transcript.unsubscribe`, `thread.start`, `assistant.start`, `thread.settle`, `thread.model.set`, `thread.reasoning.set`, `plan.submit`, `plan.approve`, `turn.send`, and `turn.steer`. Omitting it preserves the legacy local-primary behavior.
 - `weather.locations { query }` searches Open-Meteo's fixed geocoding endpoint and returns `{ locations }` with bounded IDs, city names, regions, countries, and rounded coordinates.
-- `weather.current { latitude, longitude }` returns `{ temperatureC, condition, observedAt, fetchedAt }` from Open-Meteo's fixed forecast endpoint. These methods use the existing WebSocket authentication, origin checks, and request limits. The bridge rejects redirects, caps provider responses and concurrent requests, coalesces requests, caches weather for 15 minutes, and returns sanitized failures. Coordinates and provider response bodies are not logged. No provider credential is required for the noncommercial service.
+- `weather.current { latitude, longitude }` returns `{ temperatureC, condition, observedAt, fetchedAt }` from Open-Meteo's fixed forecast endpoint. These methods use the existing WebSocket authentication and request limits. The bridge rejects redirects, caps provider responses and concurrent requests, coalesces requests, caches weather for 15 minutes, and returns sanitized failures. Coordinates and provider response bodies are not logged. No provider credential is required for the noncommercial service.
 - `thread.settle { threadId }` returns `{ threadId, settled: true, sequence }`. Requires an authorized, unarchived thread with no running turn or pending input. The bridge checks fresh state, then dispatches T3’s native settlement command, which atomically rejects concurrent starts and blocking requests. Older installed bridges require a runtime update.
 - `sessions.list {}` returns `{ snapshotId, frozenAt, unsettled, settled, environments, partial }` aggregated across connected environments. Both groups sort by `lastActivityAt`, newest first. The response is one frozen snapshot. Entries carry `environmentId` and `environmentLabel`, so resource identity is `(environmentId, id)`, not a bare thread ID. The client decides when to replace it.
 
@@ -203,7 +171,7 @@ Session summaries in lists, `sessions.changed`, and transcripts also include `co
 
 When T3 marks the latest turn completed and identifies its authoritative assistant message, the bridge removes temporary assistant progress messages from that turn. The identifier must match a bounded assistant message on the same turn. Missing or invalid identifiers leave all messages intact.
 - `thread.start { projectId, modelSelection: { instanceId, model, reasoningId? }, text }` creates the thread, then starts its first turn, both with server-selected `full-access`. It returns `{ threadId, text, sequence }`.
-- `assistant.start { projectId, modelSelection: { instanceId, model, reasoningId? }, text }` creates an Ask assistant thread and its first turn with server-selected `full-access`. It performs the same project/model checks as ordinary creation. Clients cannot supply an arbitrary runtime mode. Ordinary `thread.start` and HTTP `POST /v1/sessions` also use `full-access`. Existing-thread sends preserve the thread's current mode.
+- `assistant.start { projectId, modelSelection: { instanceId, model, reasoningId? }, text }` creates an Ask assistant thread and its first turn with server-selected `full-access`. It performs the same project/model checks as ordinary creation. Clients cannot supply an arbitrary runtime mode. Ordinary `thread.start` also uses `full-access`. Existing-thread sends preserve the thread's current mode.
 - `turn.send { threadId, text }` starts a turn in an existing, idle thread. It returns `{ threadId, text, sequence }`.
 - `turn.steer { threadId, text }` adds steering to a running or starting turn. It returns `{ threadId, text, sequence }`. T3 does not expose an atomic expected-turn precondition, so a turn can settle between the bridge status check and dispatch.
 - `voice.start {}` opens one recording and returns `{ maxBytes, sampleRate: 16000, channels: 1, format: "pcm_s16le" }`.
@@ -212,36 +180,33 @@ When T3 marks the latest turn completed and identifies its authoritative assista
 - `voice.finish {}` stops audio intake, transcribes the full recording, and returns `{ text }`. It does not call T3. The client must show this final draft before using `assistant.start`, `thread.start`, or `turn.send` on a later, explicit action.
 - `voice.cancel {}` aborts transcription when possible, zeroes audio, and returns `{ cancelled }`.
 
-Events are `bridge.status`, `sessions.changed`, `transcript.changed`, `subscription.error`, `voice.partial`, and `voice.error`. The bridge polls T3 snapshots and emits changes by `snapshotSequence`; default interval is 500 ms.
+Events are `bridge.status`, `sessions.changed`, `transcript.changed`, `subscription.error`, `archive.status`, `voice.partial`, and `voice.error`. The bridge polls T3 snapshots and emits changes by `snapshotSequence`; default interval is 500 ms.
 
 ## Existing plan-mode input
 
 `transcript.get` adds optional `pendingPlanInput` with a request ID, revision, turn ID, creation timestamp, and bounded questions/options. It is derived only from structured `user-input.requested` lifecycle activities in an active plan-mode thread; resolved or failed requests are removed. Tool approvals are not exposed through this path.
 
-Authenticated `plan.submit { threadId, requestId, revision, answers }` accepts exactly one answer for every question. Each answer is `{ questionId, optionIndexes, text }`: selected option indexes or a nonempty custom answer. Multi-select questions may contain several indexes. The bridge freshly checks the thread's project permissions, active request and revision, rejects incomplete/duplicate/invalid answers, and dispatches `thread.user-input.respond` with a stable command ID. It preserves runtime permissions and interaction mode. T3 deduplicates that command ID durably; the bridge also coalesces identical concurrent submissions. Transport uncertainty produces `plan_submission_uncertain`, never a normal message fallback. See [the glasses interaction and persistence guide](../docs/plan-questions.md).
+Authenticated `plan.submit { threadId, requestId, revision, answers }` accepts exactly one answer for every question. Each answer is `{ questionId, optionIndexes, text }`: selected option indexes or a nonempty custom answer. Multi-select questions may contain several indexes. The bridge freshly checks the thread's project permissions, active request and revision, rejects incomplete/duplicate/invalid answers, and dispatches `thread.user-input.respond` with a stable command ID. It preserves runtime permissions and interaction mode. T3 deduplicates that command ID durably; the bridge also coalesces identical concurrent submissions. Transport uncertainty produces `plan_submission_uncertain`, never a normal message fallback. See [plan approval and session controls](../docs/faceclaw.md#plan-approval-and-session-controls).
 
-## Adding bridge services for dashboards
+## Adding bridge services
 
-`src/service-registry.ts` provides an explicit service registry for future dashboard data or bridge-hosted tools. `createBridgeServer` composes its services once, in process. A definition contains a namespace and named handlers; the wire method is the exact `namespace.method` pair. Weather currently registers only `weather.locations` and `weather.current`.
+`src/service-registry.ts` provides an explicit service registry for future app data or bridge-hosted tools. `createBridgeServer` composes its services once, in process. A definition contains a namespace and named handlers; the wire method is the exact `namespace.method` pair. Weather currently registers only `weather.locations` and `weather.current`.
 
 To add a service, implement its operations and register closures in `createBridgeServer`. Each handler receives the request parameter object, validates its own schema, and returns a reduced result. Keep resource bounds, operation-specific permissions, timeouts, and safe errors in the service. Handlers that make network requests should use explicitly configured destinations and reject redirects that could escape those destinations. Never accept a client-supplied URL as a general proxy.
 
-The registry runs only after the existing WebSocket authentication, origin, and frame checks. Unknown methods retain the `method_not_found` response, and the existing socket error mapper sanitizes unexpected failures. Registration rejects duplicate namespaces and reserves the T3/session/voice namespaces. Core T3 and voice routing stays separate. Services receive no credentials or broad T3 capabilities unless explicitly supplied through trusted server composition.
+The registry runs only after the existing WebSocket authentication and frame checks. Unknown methods retain the `method_not_found` response, and the existing socket error mapper sanitizes unexpected failures. Registration rejects duplicate namespaces and reserves the T3/session/voice namespaces. Core T3 and voice routing stays separate. Services receive no credentials or broad T3 capabilities unless explicitly supplied through trusted server composition.
 
-This is an extension point only. There is no RSS reader, arbitrary-URL fetch method, client-controlled registration, dynamic module loading, or new HTTP route. Add matching phone protocol types and dashboard integration when implementing a concrete service, then cover invalid input, unauthorized access, resource limits, and safe failure behavior in tests.
+This is an extension point only. There is no RSS reader, arbitrary-URL fetch method, client-controlled registration, dynamic module loading, or new HTTP route. Add matching T3 app protocol types when implementing a concrete service, then cover invalid input, unauthorized access, resource limits, and safe failure behavior in tests.
 
-## HTTP fallback
+## HTTP routes
 
-All `/v1/*` routes except `POST /v1/pair` require `Authorization: Bearer <BRIDGE_TOKEN>` and the same origin policy. Pairing still requires an allowed origin, including the bounded Even loopback exception when enabled. It accepts `{ passphrase }`, allows five attempts per client address every five minutes, and returns `{ token }` only after a constant-time match.
+Every route rejects a browser `Origin` header.
 
-- `GET /v1/status`
-- `GET /v1/projects`
-- `GET /v1/sessions`
-- `GET /v1/sessions/:threadId/transcript`
-- `POST /v1/sessions` with `{ projectId, modelSelection: { instanceId, model, reasoningId? }, text }`
-- `POST /v1/sessions/:threadId/messages` with `{ text }`
-
-`GET /health` is unauthenticated and returns only `{ "status": "ok" }`.
+- `GET /health` is unauthenticated and returns only `{ "status": "ok" }`.
+- `GET /v1/status` and `GET /v1/environments` require the owner `BRIDGE_TOKEN`. Local tools use them for readiness and peer checks.
+- `POST /v1/faceclaw/pair` accepts `{ passphrase }`, allows five attempts per client address every five minutes, and returns the native `{ token }` only after a constant-time match.
+- Owner-only provisioning, provider-session, and MCP routes under `/v1/faceclaw/` are described in the [integration guide](../docs/faceclaw.md).
+- Peer routes under `/v1/peer/` use their own credentials; see [peer setup](../docs/peers.md).
 
 ## Configuration
 
@@ -249,9 +214,12 @@ See `.env.example`. The process does not load `.env` automatically.
 
 Useful controls:
 
-- `BRIDGE_PASSPHRASE` enables the temporary phone pairing exchange. It has no default. Unset it to disable pairing.
+- `BRIDGE_PASSPHRASE` enables the phone pairing exchange. It has no default. Unset it to disable pairing.
+- `BRIDGE_FACECLAW_PROJECT_ID` enables glasses tools for one T3 project. `BRIDGE_REFINEMENT_CODEX_PATH` enables Luna refinement. See the [integration guide](../docs/faceclaw.md).
+- `BRIDGE_SIGNAL_CLI_PATH` and `BRIDGE_SIGNAL_DATA_DIR` together enable the [Signal service](../docs/signal.md).
+- `BRIDGE_PEER_DIRECTORY` enables [peer federation](../docs/peers.md).
 - `BRIDGE_PROJECT_IDS` restricts all lists, transcript reads, and sends to a comma-separated project ID allowlist.
-- `BRIDGE_RUNTIME_MODE` remains accepted for older installation configurations (`approval-required`, `auto-accept-edits`, `auto`, or `full-access`), but does not select new-session permissions. All new app sessions and their first turns use `full-access`, even when an existing installation sets `approval-required`. They can perform workspace actions without supervised approval prompts. Existing conversations keep their current mode. Update the running computer bridge for this policy to take effect; rebuilding only the glasses package is insufficient.
+- `BRIDGE_RUNTIME_MODE` remains accepted for older installation configurations (`approval-required`, `auto-accept-edits`, `auto`, or `full-access`), but does not select new-session permissions. All new app sessions and their first turns use `full-access`, even when an existing installation sets `approval-required`. They can perform workspace actions without supervised approval prompts. Existing conversations keep their current mode. Update the running computer bridge for this policy to take effect.
 - `BRIDGE_MAX_VOICE_BYTES` defaults to `9600000`, or five minutes of the required PCM format.
 - `WHISPER_SERVER_URL` must be an HTTP URL on numeric loopback and end in `/inference`. `start:t3` configures this automatically.
 - `WHISPER_LANGUAGE` defaults to `en`. Set `auto` for detection or a two-to-three-letter language code when using a multilingual model.
@@ -280,35 +248,12 @@ npm run typecheck
 npm run build
 ```
 
-Reference material: [T3 remote architecture](https://github.com/pingdotgg/t3code/blob/main/docs/internals/remote.md), [T3 environment authentication](https://github.com/pingdotgg/t3code/blob/main/docs/internals/environment-auth.md), [Even Hub networking](https://hub.evenrealities.com/docs/build/networking), [whisper.cpp](https://github.com/ggml-org/whisper.cpp), [whisper.cpp server](https://github.com/ggml-org/whisper.cpp/tree/master/examples/server), and [Tailscale Serve](https://tailscale.com/docs/reference/tailscale-cli/serve).
+Reference material: [T3 remote architecture](https://github.com/pingdotgg/t3code/blob/main/docs/internals/remote.md), [T3 environment authentication](https://github.com/pingdotgg/t3code/blob/main/docs/internals/environment-auth.md), [whisper.cpp](https://github.com/ggml-org/whisper.cpp), [whisper.cpp server](https://github.com/ggml-org/whisper.cpp/tree/master/examples/server), and [Tailscale Serve](https://tailscale.com/docs/reference/tailscale-cli/serve).
 
-## Android companion protocol
-
-See [companion setup and local testing](../docs/android-companion.md). The companion uses separate scoped native credentials. Browser credentials cannot authorize native synchronization, and native credentials cannot authorize T3 or Even browser RPCs. Existing browser origins and authentication remain enforced.
-
-The authenticated Even connection exposes `phone.pairing.create`, `phone.apps.list`, `phone.apps.setEnabled`, `phone.notifications.list`, `phone.notifications.reply`, and `phone.notifications.dismiss`. List calls return the full `PhoneSnapshot` contract in `src/phone.ts`. `phone.changed` publishes updated connection, permission, app, and notification state.
-
-The companion exchanges a single-use five-minute code at `POST /v1/phone/pair`, then calls `POST /v1/phone/sync` with its native bearer token and no browser Origin. A bounded full snapshot includes active notifications, installed-app metadata, selected packages, permission state, and prior command results. The response contains app selections and commands delivered once. Native Android intents never cross this interface. App toggles persist on the phone and repopulate the bridge after restart; message contents stay in memory.
-
-Reply/dismiss requests supply a stable notification key, current revision, and `commandId` made with `createPhoneCommandId()`; replies also supply reviewed text. IDs embed a millisecond timestamp plus UUID and have an immutable 30-second validity window. Commands include matching `issuedAt` and `expiresAt`; consumed receipts are retained until safe expiry. This permits bounded cleanup without renewing stale commands. Clock rollback fails closed. Results distinguish `handed_off`, `dismissed`, `unavailable`, `failed`, and `unknown`. A lost result or disconnect never triggers automatic replay.
-
-After six seconds without a phone snapshot, phone actions become unavailable and phone-targeted voice capture is cancelled. Removal and permission revocation also invalidate recording targets. Reconnection reconciles the phone's current active state. A successful dispatch is app handoff, not recipient delivery; native compare-and-cancel remains a best-effort check against Android's non-transactional API.
-
-### Experimental Android display wake relay
-
-Updated companions may add `wakeRelayEnabled: boolean` to native sync. It defaults to false and is set only after the phone's local opt-in and Android notification permission/channel checks. The optional `wakeEvents` response holds at most eight `{ id, kind, issuedAt, expiresAt }` entries. `kind` is `t3` or `phone`; IDs are SHA-256 event fingerprints and the lease lasts 30 seconds. No title, transcript, message body, project path, intent, or new T3 action crosses this route. Native authentication still cannot access browser/T3 routes.
-
-While opted in and connected, a separate non-overlapping poll reads project-filtered, unarchived, unsettled T3 completions. Running/starting sessions wait for idle. An unavailable T3 provider does not delay phone sync or phone alerts. Phone alerts use only eligible notifications from bridge-enabled apps; action-token changes alone do not count as new content. Initial connection, opt-in, reconnection, restored notification access, and app-selection changes baseline existing notifications. Provider recovery baselines existing T3 completions. Historical events older than 30 seconds are skipped. Bounded wake batches drain before HTTP delivery; lost responses do not trigger retries.
-
-Android saves only receipt IDs/expiry in its existing encrypted storage before posting a generic native notification. The notification replaces the previous relay, expires on Android after five seconds, and posts at most once per three seconds. The companion's package is excluded from capture in release builds. Debug builds permit only the existing shell-protected `simulation` channel; the wake channel is excluded in every build.
-
-This is a best-effort route through Even's native notification forwarding, not an SDK display-wake command. See [setup and device verification](../docs/android-companion.md#experimental-auto-display-wake).
-
-
-### Existing-session controls
+## Existing-session controls
 
 Authenticated glasses RPC supports `thread.reasoning.set` with `threadId`, `reasoningId`, and `expectedModel: { instanceId, model }`. The bridge checks fresh project/thread visibility, rejects active turns or pending input, confirms the model has not changed, and validates reasoning against T3's fresh provider catalog. It updates `thread.meta.update.modelSelection` while preserving the provider, model, unrelated options, and runtime permissions.
 
 `turn.send` accepts optional `interactionMode` (`default` or `plan`) and `reasoningId`. Mode selection is persisted through `thread.interaction-mode.set` before starting the reviewed message. `turn.steer` accepts only `threadId` and `text`; active-turn mode/reasoning changes are rejected. Mode and turn start are separate T3 commands: a failed send may leave the selected mode in place and is never retried automatically.
 
-Transcripts expose `session.interactionMode`, the bounded public selection fields in `session.modelSelection`, and `pendingProposedPlan` when a completed plan is actionable. Older frontends can ignore these additive fields; frontends hide controls when the fields are absent. See [completed-plan approval and limitations](../docs/plan-questions.md#native-faceclaw-session-controls) for `plan.approve`.
+Transcripts expose `session.interactionMode`, the bounded public selection fields in `session.modelSelection`, and `pendingProposedPlan` when a completed plan is actionable. Older frontends can ignore these additive fields; frontends hide controls when the fields are absent. See [completed-plan approval and limitations](../docs/faceclaw.md#plan-approval-and-session-controls) for `plan.approve`.

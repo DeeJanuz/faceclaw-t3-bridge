@@ -5,13 +5,13 @@ import WebSocket from "ws";
 import { loadConfig } from "../src/config.js";
 import { ManagedEnvironmentRouter } from "../src/environment-router.js";
 import { createBridgeServer } from "../src/server.js";
+import { faceclawToken } from "../src/faceclaw.js";
 import type {
   T3Client, T3Descriptor, T3ModelCatalog, T3NewSessionSelection, T3Project,
   T3ShellSnapshot, T3ThreadShell, T3ThreadSnapshot, Transcriber,
 } from "../src/types.js";
 
 const BRIDGE_TOKEN = "abcdefghijklmnopqrstuvwxyzABCDEF";
-const ORIGIN = "https://even-app.example";
 const updatedAt = "2026-09-12T00:00:00.000Z";
 
 class EnvironmentClient implements T3Client {
@@ -73,14 +73,13 @@ describe("multi-environment bridge protocol", () => {
     const router = new ManagedEnvironmentRouter();
     router.register({ descriptor: await local.descriptor(), kind: "local", client: local, primary: true });
     router.register({ descriptor: await remote.descriptor(), kind: "t3-connect", client: remote });
-    const config = { ...loadConfig({ BRIDGE_TOKEN, T3_ACCESS_TOKEN: "unused",
-      BRIDGE_ALLOWED_ORIGINS: ORIGIN }), port: 0, pollIntervalMs: 60_000 };
+    const config = { ...loadConfig({ BRIDGE_TOKEN, T3_ACCESS_TOKEN: "unused" }), port: 0, pollIntervalMs: 60_000 };
     const transcriber = { transcribe: async () => "" } as Transcriber;
     const server = createBridgeServer(config, router, transcriber);
     await new Promise<void>(resolve => server.listen(0, "127.0.0.1", resolve));
     const address = server.address() as AddressInfo;
-    const socket = new WebSocket(`ws://127.0.0.1:${address.port}/v1/events`,
-      ["even-t3-v1", `auth.${BRIDGE_TOKEN}`], { origin: ORIGIN });
+    const socket = new WebSocket(`ws://127.0.0.1:${address.port}/v1/faceclaw/events`,
+      ["even-t3-v1", `auth.${faceclawToken(BRIDGE_TOKEN)}`]);
     await new Promise<void>((resolve, reject) => { socket.once("open", resolve); socket.once("error", reject); });
     try {
       const listed = await rpc(socket, "list", "sessions.list", {});

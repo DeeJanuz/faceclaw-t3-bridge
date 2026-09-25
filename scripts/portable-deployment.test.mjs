@@ -61,6 +61,19 @@ test('portable installation carries the explicit Codex path into the isolated re
   ]);
   assert.equal(parsed.refinementCodexPath, config.refinementCodexPath);
 });
+test('portable service passes the assistant archive pair through, and only as a pair', () => {
+  const base = { bridgePort: 8787, t3BaseUrl: 'http://127.0.0.1:3773', t3BaseDir: '/home/test/.t3', t3Executable: '/opt/t3/node', t3Entry: '/opt/t3/bin.mjs', whisperModel: '/home/test/model.bin' };
+  assert.equal('BRIDGE_ARCHIVE_PROJECT_ID' in bridgeEnvironment(base), false);
+  const env = bridgeEnvironment({ ...base, archiveProjectId: 'assistant-project', archiveWorkspaceRoot: '/home/test/Digital Assistant' });
+  assert.equal(env.BRIDGE_ARCHIVE_PROJECT_ID, 'assistant-project');
+  assert.equal(env.BRIDGE_ARCHIVE_WORKSPACE_ROOT, '/home/test/Digital Assistant');
+  assert.throws(() => bridgeEnvironment({ ...base, archiveProjectId: 'assistant-project' }));
+  assert.throws(() => bridgeEnvironment({ ...base, archiveProjectId: 'assistant-project', archiveWorkspaceRoot: '/home/test/../other' }));
+  const prerequisites = ['--t3-executable', '/opt/t3/node', '--t3-entry', '/opt/t3/bin.mjs', '--whisper-executable', '/opt/whisper', '--whisper-model', '/home/test/model.bin', '--tailscale-executable', '/opt/tailscale'];
+  const parsed = parseArguments([...prerequisites, '--archive-project-id', 'assistant-project', '--archive-workspace-root', '/home/test/Digital Assistant']);
+  assert.equal(parsed.archiveWorkspaceRoot, '/home/test/Digital Assistant');
+  assert.throws(() => parseArguments([...prerequisites, '--archive-workspace-root', '/home/test/Digital Assistant']));
+});
 test('installer rejects missing prerequisites, unknown flags and duplicate ports without side effects', () => {
   assert.throws(() => parseArguments(['--token', 'secret']));
   assert.throws(() => parseArguments(['--dry-run']));

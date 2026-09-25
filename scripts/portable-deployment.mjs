@@ -2,7 +2,7 @@ import path from 'node:path';
 import { createHmac } from 'node:crypto';
 import { access, realpath } from 'node:fs/promises';
 import { homedir } from 'node:os';
-import { tailscaleOrigins, validatePort, loopbackT3Url } from './deployment-helpers.mjs';
+import { archiveEnvironment, tailscaleOrigins, validatePort, loopbackT3Url } from './deployment-helpers.mjs';
 export { loopbackT3Url } from './deployment-helpers.mjs';
 
 export const SERVICE_NAME = 'even-t3-bridge';
@@ -35,6 +35,7 @@ export function bridgeEnvironment(config) {
     ...(config.refinementCodexPath ? { BRIDGE_REFINEMENT_CODEX_PATH: cleanPath(config.refinementCodexPath) } : {}),
     ...(config.whisperExecutable ? { WHISPER_CPP_SERVER_PATH: cleanPath(config.whisperExecutable) } : {}),
     WHISPER_MODEL_PATH: cleanPath(config.whisperModel),
+    ...archiveEnvironment(config.archiveProjectId, config.archiveWorkspaceRoot),
   };
 }
 export function connectionInfo(config) {

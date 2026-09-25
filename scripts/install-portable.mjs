@@ -8,7 +8,7 @@ import path from 'node:path';
 import { homedir } from 'node:os';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { promisify } from 'node:util';
-import { tailscaleInfoFromStatus, tailscaleServePortState, validatePort } from './deployment-helpers.mjs';
+import { archiveEnvironment, tailscaleInfoFromStatus, tailscaleServePortState, validatePort } from './deployment-helpers.mjs';
 import { cleanPath, connectionInfo, dataDirectory, loopbackT3Url, resolveT3Entry, systemdUnit, windowsTaskScript } from './portable-deployment.mjs';
 const exec = promisify(execFile);
 const repo = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -41,7 +41,7 @@ async function freePort(port) {
 }
 export function parseArguments(argv) {
   const options = { httpsPort: 8443, bridgePort: 8787, t3BaseUrl: 'http://127.0.0.1:3773', t3BaseDir: path.join(homedir(), '.t3'), dryRun: false };
-  const values = { '--https-port': 'httpsPort', '--bridge-port': 'bridgePort', '--t3-url': 't3BaseUrl', '--t3-base-dir': 't3BaseDir', '--t3-executable': 't3Executable', '--t3-entry': 't3Entry', '--refinement-codex-path': 'refinementCodexPath', '--whisper-executable': 'whisperExecutable', '--whisper-model': 'whisperModel', '--tailscale-executable': 'tailscaleExecutable' };
+  const values = { '--https-port': 'httpsPort', '--bridge-port': 'bridgePort', '--t3-url': 't3BaseUrl', '--t3-base-dir': 't3BaseDir', '--t3-executable': 't3Executable', '--t3-entry': 't3Entry', '--refinement-codex-path': 'refinementCodexPath', '--whisper-executable': 'whisperExecutable', '--whisper-model': 'whisperModel', '--tailscale-executable': 'tailscaleExecutable', '--archive-project-id': 'archiveProjectId', '--archive-workspace-root': 'archiveWorkspaceRoot' };
   for (let i = 0; i < argv.length; i++) {
     if (argv[i] === '--dry-run') { options.dryRun = true; continue; }
     const key = values[argv[i]];
@@ -56,6 +56,8 @@ export function parseArguments(argv) {
     if (!options[key]) throw new Error(`Missing ${key}; the installation skill must discover the installed prerequisite first`);
     cleanPath(options[key]);
   }
+  // Both or neither; the bridge rejects archive setup on Windows at startup.
+  archiveEnvironment(options.archiveProjectId, options.archiveWorkspaceRoot);
   return options;
 }
 export const HELP = `Usage: node scripts/install-portable.mjs [--dry-run] OPTIONS
@@ -74,6 +76,9 @@ Optional:
   --t3-url ORIGIN            Numeric loopback HTTP origin (default: http://127.0.0.1:3773)
   --https-port PORT          Private Tailscale HTTPS port (default: 8443)
   --bridge-port PORT         Local bridge port (default: 8787)
+  --archive-project-id ID    T3 project whose conversations are archived (macOS/Linux)
+  --archive-workspace-root PATH
+                              That project's workspace; both archive flags are required together
   --dry-run                 Show plan without creating files or services
   --help, -h                Show this help without inspecting host state
 `;
@@ -95,6 +100,10 @@ export async function main(argv = process.argv.slice(2)) {
   }
   for (const key of ['t3Executable', 't3BaseDir', 'whisperExecutable', 'whisperModel', 'tailscaleExecutable']) await access(options[key]);
   if (options.refinementCodexPath) await access(options.refinementCodexPath);
+  if (options.archiveWorkspaceRoot) {
+    const stat = await lstat(options.archiveWorkspaceRoot);
+    if (!stat.isDirectory() || await realpath(options.archiveWorkspaceRoot) !== options.archiveWorkspaceRoot) throw new Error('Archive workspace must be an existing local directory without symlinks');
+  }
   options.t3Entry = await resolveT3Entry(options.t3Entry);
   await access(path.join(repo, 'bridge', 'dist', 'src', 'runtime.js'));
   const compiled = await import(pathToFileURL(path.join(repo, 'bridge', 'dist', 'src', 'config.js')).href);

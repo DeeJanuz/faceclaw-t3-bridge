@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import { loadConfig } from "../src/config.js";
-import { normalizePendingPlanInput, PlanInputService, validatePlanAnswers } from "../src/plan-input.js";
+import { attachPendingQuestions, normalizePendingPlanInput, PlanInputService, validatePlanAnswers } from "../src/plan-input.js";
 import { normalizeTranscript } from "../src/normalize.js";
 import type { T3Client, T3Thread, T3ShellSnapshot } from "../src/types.js";
 
@@ -66,6 +66,30 @@ describe("pending plan input normalization", () => {
     const changed = active();
     changed.activities = [{ ...changed.activities![0], payload: { requestId: "request", questions: [{ ...q, options: [...q.options].reverse() }] } }];
     assert.notEqual(normalizePendingPlanInput(changed)!.revision, original.revision);
+  });
+});
+
+describe("pending question previews", () => {
+  it("attaches the first bounded question to blocked sessions only", async () => {
+    const thread = active();
+    thread.activities = [{ ...thread.activities![0], payload: { requestId: "request",
+      questions: [{ ...q, question: `Which  option\nshould ${"we ".repeat(200)}use?` }, { ...q, id: "second" }] } }];
+    const sessions: Array<{ id: string; projectId: string; hasPendingUserInput?: boolean; pendingQuestion?: string }> = [
+      { id: "thread", projectId: "project", hasPendingUserInput: true }, { id: "idle", projectId: "project" }];
+    const read: string[] = [];
+    await attachPendingQuestions(sessions, () => ({ thread: async (id: string) => { read.push(id); return { snapshotSequence: 1, thread }; } }));
+    assert.deepEqual(read, ["thread"]);
+    assert.equal(sessions[0]!.pendingQuestion!.length, 280);
+    assert.match(sessions[0]!.pendingQuestion!, /^Which option should we we .*\.\.\. \(\+1 more\)$/);
+    assert.equal(sessions[1]!.pendingQuestion, undefined);
+  });
+  it("leaves the preview empty when the thread read fails or belongs elsewhere", async () => {
+    const sessions = [{ id: "thread", projectId: "other", hasPendingUserInput: true } as { id: string; projectId: string; hasPendingUserInput: boolean; pendingQuestion?: string }];
+    await attachPendingQuestions(sessions, () => ({ thread: async () => ({ snapshotSequence: 1, thread: active() }) }));
+    assert.equal(sessions[0]!.pendingQuestion, undefined);
+    sessions[0]!.projectId = "project";
+    await attachPendingQuestions(sessions, () => ({ thread: async () => { throw new Error("offline"); } }));
+    assert.equal(sessions[0]!.pendingQuestion, undefined);
   });
 });
 

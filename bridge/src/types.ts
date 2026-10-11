@@ -113,6 +113,12 @@ export interface T3SessionState {
 
 export interface T3ThreadShell {
   readonly hasPendingUserInput?: boolean;
+  /**
+   * In-memory T3 state for work that outlives the turn: "working" while
+   * subagents or workflows run, "monitoring" when only watch loops remain.
+   * Untrusted; read it through `sessionBackground`.
+   */
+  readonly backgroundLiveness?: unknown;
   readonly id: string;
   readonly projectId: string;
   readonly title: string;

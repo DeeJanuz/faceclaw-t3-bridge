@@ -124,6 +124,15 @@ export function completedTurn(thread: T3ThreadShell): { id: string; completedAt:
   return { id: turn.turnId, completedAt: iso };
 }
 
+export type SessionBackground = "subagents" | "monitoring";
+
+/** Work T3 keeps running after the turn settles. Unknown values are ignored. */
+export function sessionBackground(thread: T3ThreadShell): SessionBackground | null {
+  if (thread.backgroundLiveness === "working") return "subagents";
+  if (thread.backgroundLiveness === "monitoring") return "monitoring";
+  return null;
+}
+
 function sessionSummary(thread: T3ThreadShell, projects: ReadonlyMap<string, T3Project>, environment?: EnvironmentIdentity) {
   return {
     ...environmentFields(environment),
@@ -136,6 +145,7 @@ function sessionSummary(thread: T3ThreadShell, projects: ReadonlyMap<string, T3P
     settled: thread.settledOverride === "settled",
     completedTurn: completedTurn(thread),
     hasPendingUserInput: thread.hasPendingUserInput === true && thread.latestTurn?.state === "running",
+    background: sessionBackground(thread),
   };
 }
 
@@ -671,6 +681,7 @@ export function normalizeTranscript(snapshot: T3ThreadSnapshot, projectTitle = "
       settled: snapshot.thread.settledOverride === "settled",
       completedTurn: completedTurn(snapshot.thread),
       hasPendingUserInput: snapshot.thread.hasPendingUserInput === true && snapshot.thread.latestTurn?.state === "running",
+      background: sessionBackground(snapshot.thread),
       ...normalizeSessionSettings(snapshot.thread),
     },
     tokenUsage: normalizeTokenUsage(snapshot.thread.activities),

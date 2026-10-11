@@ -384,6 +384,12 @@ describe("configuration security", () => {
 });
 
 describe("normalization", () => {
+  it("exposes T3 background work as subagents or monitoring and ignores unknown values", () => {
+    const base = thread("older", "2026-09-01T12:00:00.000Z");
+    const statuses = ["working", "monitoring", "future", null, undefined].map((backgroundLiveness) =>
+      normalizeSessions({ ...shell, threads: [{ ...base, backgroundLiveness }] }, config()).unsettled[0]?.background);
+    assert.deepEqual(statuses, ["subagents", "monitoring", null, null, null]);
+  });
   it("uses conversation recency rather than settlement or thread metadata edits", () => {
     const older = { ...thread("older", "2026-09-01T12:00:00.000Z"),
       updatedAt: "2026-09-04T12:00:00.000Z", settledAt: "2026-09-04T12:00:00.000Z" };
@@ -1794,6 +1800,34 @@ describe("WebSocket RPC and voice boundary", () => {
     assert.equal(serialized.includes("Do the work"), false);
     assert.equal(serialized.includes("Done"), false);
     assert.equal(serialized.includes("turns"), false);
+    socket.close();
+  });
+
+  it("announces background work changes that T3 keeps outside the shell sequence", async () => {
+    const client = new FakeT3Client(structuredClone(shell));
+    const { base } = await startServer(client, new FakeTranscriber(), { pollIntervalMs: 10 });
+    const socket = await openSocket(base);
+    const nextSessionsChange = () => new Promise<Record<string, unknown>>((resolve, reject) => {
+      const timeout = setTimeout(() => reject(new Error("Sessions change timed out")), 2000);
+      const listener = (raw: WebSocket.RawData) => {
+        const value = JSON.parse(raw.toString()) as Record<string, unknown>;
+        if (value.type === "event" && value.event === "sessions.changed") {
+          clearTimeout(timeout);
+          socket.off("message", listener);
+          resolve(value);
+        }
+      };
+      socket.on("message", listener);
+    });
+    await nextSessionsChange();
+    const sequence = client.shellSnapshot.snapshotSequence;
+    for (const [liveness, expected] of [["working", "subagents"], ["monitoring", "monitoring"], [null, null]] as const) {
+      const changed = nextSessionsChange();
+      client.shellSnapshot = { ...client.shellSnapshot, snapshotSequence: sequence,
+        threads: client.shellSnapshot.threads.map((item) => item.id === "older" ? { ...item, backgroundLiveness: liveness } : item) };
+      const payload = (await changed).payload as { unsettled: Array<{ id: string; background: unknown }> };
+      assert.equal(payload.unsettled.find((item) => item.id === "older")?.background, expected);
+    }
     socket.close();
   });
 

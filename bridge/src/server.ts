@@ -8,7 +8,7 @@ import { createServer, type IncomingMessage, type Server, type ServerResponse } 
 import { WebSocketServer, WebSocket, type RawData } from "ws";
 import { WeatherService } from "./weather.js";
 import { SessionControlsService, freshAllowedThread, requireIdleSession } from "./session-controls.js";
-import { PlanInputService } from "./plan-input.js";
+import { PlanInputService, attachPendingQuestions } from "./plan-input.js";
 import { BridgeServiceRegistry } from "./service-registry.js";
 import { PeerService, type PeerClientFactory } from "./peer-service.js";
 import { ManagedEnvironmentRouter, asEnvironmentRouter, isEnvironmentRouter, PrimaryEnvironmentClient } from "./environment-router.js";
@@ -17,6 +17,7 @@ import {
   findThread,
   normalizeProjects,
   normalizeSessions,
+  sessionBackground,
   normalizeTranscript,
 } from "./normalize.js";
 import {
@@ -72,6 +73,7 @@ interface SocketState {
   readonly shellSequences: Map<string, number>;
   readonly threadSequences: Map<string, number>;
   environmentFingerprint: string;
+  backgroundFingerprint: string;
   alive: boolean;
   voice: VoiceRecording | null;
 }
@@ -132,7 +134,23 @@ function aggregateSessionsFromSnapshots(snapshot: RouterSnapshots, config: Bridg
 }
 
 async function aggregateSessions(router: T3EnvironmentRouter, config: BridgeConfig) {
-  return aggregateSessionsFromSnapshots(await router.snapshots(), config);
+  const snapshot = await router.snapshots();
+  const result = aggregateSessionsFromSnapshots(snapshot, config);
+  const clients = new Map(snapshot.available.map(({ environment, client }) => [environment.environmentId, client] as const));
+  await attachPendingQuestions(result.unsettled, (environmentId) => environmentId === undefined ? undefined : clients.get(environmentId));
+  return result;
+}
+
+/**
+ * T3 keeps background liveness in memory, so a subagent or Monitor loop can
+ * finish without a new shell sequence. Track it separately for change events.
+ */
+function backgroundFingerprint(snapshot: RouterSnapshots): string {
+  return JSON.stringify(snapshot.available.map(({ environment, shell }) => [environment.environmentId,
+    shell.threads.flatMap((thread) => {
+      const background = sessionBackground(thread);
+      return background === null ? [] : [[thread.id, background]];
+    })]));
 }
 
 function aggregateProjectsFromSnapshots(snapshot: RouterSnapshots, config: BridgeConfig) {
@@ -437,6 +455,7 @@ class EventHub {
       shellSequences: new Map(),
       threadSequences: new Map(),
       environmentFingerprint: "",
+      backgroundFingerprint: "",
       alive: true,
       voice: null,
     };
@@ -511,13 +530,16 @@ class EventHub {
     try {
       const snapshot = await this.router.snapshots();
       const available = new Map(snapshot.available.map((item) => [item.environment.environmentId, item] as const));
+      const background = backgroundFingerprint(snapshot);
       for (const state of this.states) {
         const environmentFingerprint = JSON.stringify(snapshot.environments);
-        const changed = state.environmentFingerprint !== environmentFingerprint || snapshot.available.some(({ environment, shell }) =>
+        const changed = state.environmentFingerprint !== environmentFingerprint ||
+          state.backgroundFingerprint !== background || snapshot.available.some(({ environment, shell }) =>
           state.shellSequences.get(environment.environmentId) !== shell.snapshotSequence) ||
           [...state.shellSequences].some(([environmentId]) => !available.has(environmentId));
         if (changed) {
           state.environmentFingerprint = environmentFingerprint;
+          state.backgroundFingerprint = background;
           state.shellSequences.clear();
           for (const { environment, shell } of snapshot.available) {
             state.shellSequences.set(environment.environmentId, shell.snapshotSequence);
@@ -679,9 +701,13 @@ async function routeRpc(
   switch (request.method) {
     case "environments.list":
       return { environments: await router.list() };
-    case "sessions.list":
+    case "sessions.list": {
       if (aggregateMode) return aggregateSessions(router, config);
-      return normalizeSessions(await (await router.primary()).client.shell(), config);
+      const { client } = await router.primary();
+      const result = normalizeSessions(await client.shell(), config);
+      await attachPendingQuestions(result.unsettled, () => client);
+      return result;
+    }
     case "projects.list": {
       if (aggregateMode) return aggregateProjects(router, config);
       const snapshot = await (await router.primary()).client.shell();

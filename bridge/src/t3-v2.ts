@@ -222,27 +222,34 @@ function runFromProjection(value: unknown): (RunSummary & { readonly ordinal: nu
 const TOOL_ITEM_TYPES = new Set(["command_execution", "file_change", "file_search", "web_search", "dynamic_tool", "subagent"]);
 const TERMINAL_ITEM_STATUSES = new Set(["completed", "failed", "cancelled", "interrupted"]);
 
+/** Tool labels read at most this much source text, so longer input is never copied. */
+const MAX_TOOL_PREVIEW_CHARS = 2048;
+
+function preview(value: unknown): string | null {
+  return typeof value === "string" ? value.slice(0, MAX_TOOL_PREVIEW_CHARS) : null;
+}
+
 /** Shapes a V2 tool item as the V1 activity payload the label code understands. */
 function toolPayload(item: Json): Json {
   const toolCallId = string(item.id);
   const base = toolCallId === null ? {} : { toolCallId: activityId(toolCallId) };
   switch (item.type) {
     case "command_execution":
-      return { ...base, itemType: "command_execution", data: { command: string(item.input) } };
+      return { ...base, itemType: "command_execution", data: { command: preview(item.input) } };
     case "file_change": {
-      const changes = array(item.changes).flatMap((change) => record(change) && typeof change.path === "string" ? [{ path: change.path }] : []);
-      return { ...base, itemType: "file_change", data: { path: string(item.fileName), item: changes.length > 0 ? { changes } : {} } };
+      const changes = array(item.changes).slice(0, 100).flatMap((change) => record(change) && typeof change.path === "string" ? [{ path: preview(change.path) }] : []);
+      return { ...base, itemType: "file_change", data: { path: preview(item.fileName), item: changes.length > 0 ? { changes } : {} } };
     }
     case "file_search":
-      return { ...base, itemType: "dynamic_tool_call", data: { kind: "search", path: string(item.pattern) } };
+      return { ...base, itemType: "dynamic_tool_call", data: { kind: "search", path: preview(item.pattern) } };
     case "web_search":
       return { ...base, itemType: "web_search", data: {} };
     case "subagent":
       return { ...base, itemType: "collab_agent_tool_call", data: { item: {} } };
     case "dynamic_tool":
       return typeof item.viewedImagePath === "string"
-        ? { ...base, itemType: "image_view", data: { path: item.viewedImagePath } }
-        : { ...base, itemType: "mcp_tool_call", data: { toolName: string(item.toolName) } };
+        ? { ...base, itemType: "image_view", data: { path: preview(item.viewedImagePath) } }
+        : { ...base, itemType: "mcp_tool_call", data: { toolName: preview(item.toolName) } };
     default:
       return { ...base, itemType: "unknown", data: {} };
   }
@@ -278,14 +285,15 @@ function itemActivities(items: readonly unknown[]): T3ThreadActivity[] {
  * Provider turn usage as V1 context-window activities. `usedTokens` is context
  * occupancy. V2 has no cumulative counter, so the lifetime total is the sum of
  * per-turn usage, and only while every earlier turn reported complete usage.
+ * A bounded snapshot lacks older turns, so its total is unknown.
  */
-function tokenActivities(providerTurns: readonly unknown[], nodes: ReadonlyMap<string, string | null>): T3ThreadActivity[] {
+function tokenActivities(providerTurns: readonly unknown[], nodes: ReadonlyMap<string, string | null>, partialHistory: boolean): T3ThreadActivity[] {
   const turns = providerTurns.filter(record).map((turn) => ({
     turn,
     at: nonEmpty(turn.startedAt) ?? nonEmpty(record(turn.tokenUsage) ? turn.tokenUsage.updatedAt : null) ?? "",
   })).sort((left, right) => left.at.localeCompare(right.at) || Number(left.turn.ordinal ?? 0) - Number(right.turn.ordinal ?? 0));
   const activities: T3ThreadActivity[] = [];
-  let total: number | null = 0;
+  let total: number | null = partialHistory ? null : 0;
   for (const { turn } of turns) {
     const usage = record(turn.turnTokenUsage) ? turn.turnTokenUsage : null;
     const input = count(usage?.inputTokens);
@@ -371,6 +379,11 @@ function messageFromV2(value: unknown): (T3Message & { readonly attachments: rea
   };
 }
 
+/**
+ * Maps a full (`/threads/:id`) or bounded (`/threads/:id/bounded`) detail
+ * snapshot. A bounded snapshot holds the recent runs and all live control
+ * state; with `hasMoreHistory` it is not the complete conversation.
+ */
 export function threadFromV2(value: unknown): T3ThreadSnapshot {
   if (!record(value) || !Number.isSafeInteger(value.snapshotSequence) || !record(value.projection)) {
     throw new V2ShapeError("Invalid thread snapshot");
@@ -400,7 +413,7 @@ export function threadFromV2(value: unknown): T3ThreadSnapshot {
     messages,
     activities: [
       ...itemActivities(items),
-      ...tokenActivities(array(projection.providerTurns), nodes),
+      ...tokenActivities(array(projection.providerTurns), nodes, value.hasMoreHistory === true),
       ...runtimeRequestActivities(requests, items, nodes),
     ],
     proposedPlans: proposedPlans(array(projection.plans), items),

@@ -367,7 +367,7 @@ describe("HttpT3Client same-turn steering", () => {
   it("answers questions through runtime-request.respond with T3's option values", async () => {
     const { commands, rpc } = commandRecorder(() => ({ sequence: 74 }));
     const baseUrl = await startUpstream(async (request, response) => {
-      assert.equal(request.url, "/api/orchestration/threads/thread-1");
+      assert.equal(request.url, "/api/orchestration/threads/thread-1/bounded");
       assert.equal(request.headers.authorization, `Bearer ${T3_ACCESS_TOKEN}`);
       respondJson(response, v2Detail({ id: "thread-1" }, { turnItems: [{
         id: "turn-item:request-1", type: "user_input_request", requestId: "request-1", runId: RUN_ID,
@@ -744,6 +744,17 @@ describe("HttpT3Client V2 reads", () => {
     });
     const result = await new HttpT3Client(config(baseUrl)).threadPage("thread-1");
     assert.deepEqual(result.page, { hasMore: false, beforeCursor: null, snapshotSequence: 5 });
+    assert.equal(result.thread.id, "thread-1");
+  });
+
+  it("opens live views from the bounded recent window", async () => {
+    const baseUrl = await startUpstream(async (request, response) => {
+      assert.equal(request.url, "/api/orchestration/threads/thread-1/bounded");
+      respondJson(response, { ...v2Detail(v2Thread, {}, 7), historyCursor: "opaque", hasMoreHistory: true,
+        latestLocalTurnOrdinal: 3, payloadBudgetExceeded: true });
+    });
+    const result = await new HttpT3Client(config(baseUrl)).thread("thread-1");
+    assert.equal(result.snapshotSequence, 7);
     assert.equal(result.thread.id, "thread-1");
   });
 

@@ -325,17 +325,23 @@ export class HttpT3Client implements T3Client {
     return v2(() => shellFromV2(value)) as T3ShellSnapshot;
   }
 
+  /**
+   * The recent window T3's own clients open with: every live control record
+   * plus the latest runs. Long sessions exceed the upstream and peer limits as
+   * full projections; the glasses only show recent turns.
+   */
   async thread(threadId: string): Promise<T3ThreadSnapshot> {
-    const value = await this.request(`/api/orchestration/threads/${encodeURIComponent(threadId)}`);
+    const value = await this.request(`/api/orchestration/threads/${encodeURIComponent(threadId)}/bounded`);
     return v2(() => threadFromV2(value)) as T3ThreadSnapshot;
   }
 
   async threadPage(threadId: string, beforeCursor?: string): Promise<T3ThreadSnapshot> {
-    // The V2 detail snapshot is the complete projection, so it is a single page.
+    // The archive needs the complete history; the full V2 projection is a single page.
     if (beforeCursor !== undefined) {
       throw new ApiError(502, "upstream_incompatible", "T3 Code pagination is unavailable");
     }
-    const snapshot = await this.thread(threadId);
+    const value = await this.request(`/api/orchestration/threads/${encodeURIComponent(threadId)}`);
+    const snapshot = v2(() => threadFromV2(value)) as T3ThreadSnapshot;
     return { ...snapshot, page: { hasMore: false, beforeCursor: null, snapshotSequence: snapshot.snapshotSequence } };
   }
 
@@ -681,7 +687,7 @@ export class HttpT3Client implements T3Client {
     // Glasses answer with option labels. T3 expects each option's value,
     // which defaults to its label.
     const values = userInputOptionValues(
-      await this.request(`/api/orchestration/threads/${encodeURIComponent(input.threadId)}`), input.requestId);
+      await this.request(`/api/orchestration/threads/${encodeURIComponent(input.threadId)}/bounded`), input.requestId);
     if (values === null) throw new ApiError(409, "plan_request_unavailable", "These questions are no longer available. Refresh the session.");
     const answers = Object.fromEntries(Object.entries(input.answers).map(([questionId, answer]) => {
       const options = values.get(questionId);

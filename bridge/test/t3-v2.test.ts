@@ -146,6 +146,25 @@ describe("T3 V2 thread adapter", () => {
     assert.equal(unknownTotal.totalTokens, null);
   });
 
+  it("leaves the lifetime total unknown when a bounded snapshot omits older runs", () => {
+    const turn = { id: "pt-2", nodeId: NODE_2, ordinal: 2, status: "running", startedAt: "2026-10-13T10:02:01.000Z",
+      tokenUsage: { usedTokens: 2500, maxTokens: 200_000, updatedAt: "2026-10-13T10:02:30.000Z" },
+      turnTokenUsage: { usageScope: "main_agent", usageStatus: "complete", inputTokens: 2000, outputTokens: 400, hasSubagents: false } };
+    const bounded = { ...detail({ providerTurns: [turn] }), historyCursor: "opaque", hasMoreHistory: true };
+    const usage = normalizeTranscript(threadFromV2(bounded)).tokenUsage;
+    assert.equal(usage.contextTokens, 2500);
+    assert.equal(usage.totalTokens, null);
+    assert.equal(normalizeTranscript(threadFromV2({ ...bounded, hasMoreHistory: false })).tokenUsage.totalTokens, 2400);
+  });
+
+  it("copies at most the label preview of long tool input", () => {
+    const snapshot = threadFromV2(detail({ turnItems: [
+      item("command_execution", { id: "turn-item:long", input: `echo ${"x".repeat(50_000)}`, status: "running", completedAt: null }),
+    ] }));
+    assert.ok(JSON.stringify(snapshot.thread.activities).length < 5000);
+    assert.match(normalizeTranscript(snapshot).liveActivities[0]!.label, /^ran echo x+\.\.\.$/);
+  });
+
   it("exposes a pending structured question for the running run", () => {
     const questions = [{ id: "scope", header: "Scope", question: "How much should change?",
       options: [{ label: "Small", description: "One file", value: "small" }, { label: "Large", description: "Refactor" }] }];

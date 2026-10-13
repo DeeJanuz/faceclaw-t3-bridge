@@ -52,7 +52,7 @@ export function parseArguments(argv) {
   if (options.httpsPort === options.bridgePort) throw new Error('Bridge and HTTPS ports must differ');
   options.t3BaseUrl = loopbackT3Url(options.t3BaseUrl);
   for (const key of ['t3Executable', 't3Entry', 't3BaseDir', 'whisperExecutable', 'whisperModel', 'tailscaleExecutable', 'refinementCodexPath']) {
-    if (key === 'refinementCodexPath' && !options[key]) continue;
+    if (['refinementCodexPath', 't3Entry'].includes(key) && !options[key]) continue;
     if (!options[key]) throw new Error(`Missing ${key}; the installation skill must discover the installed prerequisite first`);
     cleanPath(options[key]);
   }
@@ -64,14 +64,17 @@ export const HELP = `Usage: node scripts/install-portable.mjs [--dry-run] OPTION
 
 First install for Windows/Linux; use scripts/install.sh on macOS.
 Required absolute paths:
-  --t3-executable PATH       Existing T3 Electron executable or Node executable
-  --t3-entry PATH            Existing T3 server bin.mjs (including app.asar path)
+  --t3-executable PATH       Existing T3 Electron, Node, or native t3 CLI executable
   --refinement-codex-path PATH
                               Codex CLI used for optional Luna refinement
   --whisper-executable PATH  Installed whisper-server executable
   --whisper-model PATH       Verified ggml-base.en.bin
   --tailscale-executable PATH Installed Tailscale executable
 Optional:
+  --t3-entry PATH            Existing T3 server bin.mjs (including app.asar path);
+                              required unless --t3-executable is the native t3 CLI.
+                              The CLI of T3's active runtime under the base directory
+                              takes precedence whenever it exists.
   --t3-base-dir PATH         Existing T3 state directory (default: ~/.t3)
   --t3-url ORIGIN            Numeric loopback HTTP origin (default: http://127.0.0.1:3773)
   --https-port PORT          Private Tailscale HTTPS port (default: 8443)
@@ -104,7 +107,7 @@ export async function main(argv = process.argv.slice(2)) {
     const stat = await lstat(options.archiveWorkspaceRoot);
     if (!stat.isDirectory() || await realpath(options.archiveWorkspaceRoot) !== options.archiveWorkspaceRoot) throw new Error('Archive workspace must be an existing local directory without symlinks');
   }
-  options.t3Entry = await resolveT3Entry(options.t3Entry);
+  if (options.t3Entry) options.t3Entry = await resolveT3Entry(options.t3Entry);
   await access(path.join(repo, 'bridge', 'dist', 'src', 'runtime.js'));
   const compiled = await import(pathToFileURL(path.join(repo, 'bridge', 'dist', 'src', 'config.js')).href);
   // Validate secure defaults using the same parser as the running bridge.

@@ -31,7 +31,7 @@ export function bridgeEnvironment(config) {
     BRIDGE_HOST: '127.0.0.1', BRIDGE_PORT: String(validatePort(config.bridgePort)),
     BRIDGE_RUNTIME_MODE: 'approval-required', T3_BASE_URL: loopbackT3Url(config.t3BaseUrl),
     T3_BASE_DIR: cleanPath(config.t3BaseDir), T3_CLI_EXECUTABLE: cleanPath(config.t3Executable),
-    T3_CLI_ENTRY: cleanPath(config.t3Entry),
+    ...(config.t3Entry ? { T3_CLI_ENTRY: cleanPath(config.t3Entry) } : {}),
     ...(config.refinementCodexPath ? { BRIDGE_REFINEMENT_CODEX_PATH: cleanPath(config.refinementCodexPath) } : {}),
     ...(config.whisperExecutable ? { WHISPER_CPP_SERVER_PATH: cleanPath(config.whisperExecutable) } : {}),
     WHISPER_MODEL_PATH: cleanPath(config.whisperModel),

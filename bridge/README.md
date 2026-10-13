@@ -188,9 +188,9 @@ Events are `bridge.status`, `sessions.changed`, `transcript.changed`, `subscript
 
 ## Existing plan-mode input
 
-`transcript.get` adds optional `pendingPlanInput` with a request ID, revision, turn ID, creation timestamp, and bounded questions/options. It is derived only from structured `user-input.requested` lifecycle activities in an active plan-mode thread; resolved or failed requests are removed. Tool approvals are not exposed through this path.
+`transcript.get` adds optional `pendingPlanInput` with a request ID, revision, turn ID, creation timestamp, and bounded questions/options. It is derived only from a pending V2 `user_input` runtime request and its `user_input_request` turn item; resolved, expired or cancelled requests are removed. Tool approvals are not exposed through this path.
 
-Authenticated `plan.submit { threadId, requestId, revision, answers }` accepts exactly one answer for every question. Each answer is `{ questionId, optionIndexes, text }`: selected option indexes or a nonempty custom answer. Multi-select questions may contain several indexes. The bridge freshly checks the thread's project permissions, active request and revision, rejects incomplete/duplicate/invalid answers, and dispatches `thread.user-input.respond` with a stable command ID. It preserves runtime permissions and interaction mode. T3 deduplicates that command ID durably; the bridge also coalesces identical concurrent submissions. Transport uncertainty produces `plan_submission_uncertain`, never a normal message fallback. See [plan approval and session controls](../docs/faceclaw.md#plan-approval-and-session-controls).
+Authenticated `plan.submit { threadId, requestId, revision, answers }` accepts exactly one answer for every question. Each answer is `{ questionId, optionIndexes, text }`: selected option indexes or a nonempty custom answer. Multi-select questions may contain several indexes. The bridge freshly checks the thread's project permissions, active request and revision, rejects incomplete/duplicate/invalid answers, and dispatches `runtime-request.respond` with a stable command ID. Selected options are sent as each option's T3 `value`, which defaults to its label. It preserves runtime permissions and interaction mode. T3 deduplicates that command ID durably; the bridge also coalesces identical concurrent submissions. Transport uncertainty produces `plan_submission_uncertain`, never a normal message fallback. See [plan approval and session controls](../docs/faceclaw.md#plan-approval-and-session-controls).
 
 ## Adding bridge services
 
@@ -234,15 +234,18 @@ Peer federation, the Signal service, Luna refinement, and the provider launcher 
 
 ## T3 compatibility
 
-Implemented and tested against T3 Code `0.0.38` and upstream commit `8ea52c8f2f4361e875d72ab30d72d37cfae4d87f` on September 3, 2026. It relies on:
+Requires T3 Code orchestration protocol 2 (orchestration V2). Implemented and tested against T3 Code `0.0.46-nightly.20261013.3053` on October 13, 2026. It relies on:
 
-- `GET /.well-known/t3/environment`
-- `GET /api/orchestration/shell`
-- `GET /api/orchestration/threads/:threadId`
-- `POST /api/orchestration/dispatch`
-- authenticated Effect RPC `server.getConfig` over `/ws`
-- explicit `thread.create` followed by `thread.turn.start`
+- `GET /.well-known/t3/environment`, which must report `orchestrationProtocolVersion: 2`
+- `GET /api/orchestration/shell` and `GET /api/orchestration/threads/:threadId`, sent with `x-t3-orchestration-protocol: 2`
+- authenticated Effect RPC over `/ws?orchestrationProtocol=2`: `server.getConfig` and `orchestration.dispatchCommand`
+- `thread.create` followed by `message.dispatch` with `deliveryIntent` (`auto` or `steer`); T3 resolves steering and queueing against its own thread state (`serverResolvedCommandContext`)
+- `thread.model-selection.set`, `thread.interaction-mode.set`, `thread.settle`, and `runtime-request.respond`
 - bearer session claims containing `sid`, used only by the macOS launcher for revocation
+
+`src/t3-v2.ts` maps V2 runs, turn items, runtime requests and plans onto the bridge's internal session shapes, so the glasses protocol and peer protocol did not change. A run is a turn: its id is the transcript turn id and `completedTurn.id`. Threads imported from V1 history have no runs; their transcripts group by user message and report `idle`. V1 servers are rejected as incompatible.
+
+The launcher mints T3 credentials with the CLI of T3's active runtime (`<base dir>/runtime/service-state.json`, `activeVersion`), because T3 updates itself into a new versioned directory and an older CLI issues pairing credentials the newer server rejects. Without runtime state it uses `T3_CLI_EXECUTABLE` (plus `T3_CLI_ENTRY` for Electron or Node) or, on macOS, the installed app bundle whose version matches the running server.
 
 T3 does not yet publish these orchestration contracts as a stable third-party SDK. Provider activation checks `threadSettlement`; response guards reject incompatible shapes; errors never return upstream bodies. An unavailable or incompatible T3 provider does not prevent the phone bridge from listening. Re-run this bridge's tests and a real create/send/stream smoke test after every T3 upgrade.
 
@@ -258,7 +261,7 @@ Reference material: [T3 remote architecture](https://github.com/pingdotgg/t3code
 
 ## Existing-session controls
 
-Authenticated glasses RPC supports `thread.reasoning.set` with `threadId`, `reasoningId`, and `expectedModel: { instanceId, model }`. The bridge checks fresh project/thread visibility, rejects active turns or pending input, confirms the model has not changed, and validates reasoning against T3's fresh provider catalog. It updates `thread.meta.update.modelSelection` while preserving the provider, model, unrelated options, and runtime permissions.
+Authenticated glasses RPC supports `thread.reasoning.set` with `threadId`, `reasoningId`, and `expectedModel: { instanceId, model }`. The bridge checks fresh project/thread visibility, rejects active turns or pending input, confirms the model has not changed, and validates reasoning against T3's fresh provider catalog. It writes `thread.model-selection.set` while preserving the provider, model, unrelated options, and runtime permissions. V2 applies the selection when the next run starts, so the bridge no longer stops the provider session.
 
 `turn.send` accepts optional `interactionMode` (`default` or `plan`) and `reasoningId`. Mode selection is persisted through `thread.interaction-mode.set` before starting the reviewed message. `turn.steer` accepts only `threadId` and `text`; active-turn mode/reasoning changes are rejected. Mode and turn start are separate T3 commands: a failed send may leave the selected mode in place and is never retried automatically.
 

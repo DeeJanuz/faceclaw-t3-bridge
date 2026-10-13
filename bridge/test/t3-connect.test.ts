@@ -88,13 +88,14 @@ describe("T3 Connect discovery", () => {
       if (url.href === "https://environment.example/.well-known/t3/environment") {
         assert.equal(headers.get("authorization"), "DPoP environment-access");
         verifiedDpop(headers, "GET", url.href, "environment-access");
-        return json({ environmentId: "remote-1", label: "Host label", serverVersion: "0.0.40",
-          capabilities: { threadSettlement: true } });
+        return json({ environmentId: "remote-1", label: "Host label", serverVersion: "0.0.46",
+          orchestrationProtocolVersion: 2, capabilities: { threadSettlement: true } });
       }
       if (url.href === "https://environment.example/api/orchestration/shell") {
         assert.equal(headers.get("authorization"), "DPoP environment-access");
         verifiedDpop(headers, "GET", url.href, "environment-access");
-        return json({ snapshotSequence: 9, projects: [], threads: [], updatedAt: "2026-09-12T00:00:00.000Z" });
+        assert.equal(headers.get("x-t3-orchestration-protocol"), "2");
+        return json({ schemaVersion: 2, snapshotSequence: 9, projects: [], threads: [], archivedThreads: [] });
       }
       throw new Error(`Unexpected request: ${method} ${url.href}`);
     };

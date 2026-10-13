@@ -2,6 +2,15 @@ import { randomUUID } from "node:crypto";
 import WebSocket, { type RawData } from "ws";
 import { ApiError } from "./security.js";
 import { requireIdleSession } from "./session-controls.js";
+import {
+  ORCHESTRATION_PROTOCOL_HEADER,
+  ORCHESTRATION_PROTOCOL_QUERY_PARAM,
+  ORCHESTRATION_PROTOCOL_VERSION,
+  shellFromV2,
+  threadFromV2,
+  userInputOptionValues,
+  V2ShapeError,
+} from "./t3-v2.js";
 import type {
   BridgeConfig,
   T3CatalogModel,
@@ -74,26 +83,6 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-function hasSnapshotShape(value: unknown): value is T3ShellSnapshot {
-  return (
-    isRecord(value) &&
-    Number.isSafeInteger(value.snapshotSequence) &&
-    Array.isArray(value.projects) &&
-    Array.isArray(value.threads) &&
-    typeof value.updatedAt === "string"
-  );
-}
-
-function hasThreadShape(value: unknown): value is T3ThreadSnapshot {
-  return (
-    isRecord(value) &&
-    Number.isSafeInteger(value.snapshotSequence) &&
-    isRecord(value.thread) &&
-    typeof value.thread.id === "string" &&
-    Array.isArray(value.thread.messages)
-  );
-}
-
 function hasDescriptorShape(value: unknown): value is T3Descriptor {
   return (
     isRecord(value) &&
@@ -103,6 +92,26 @@ function hasDescriptorShape(value: unknown): value is T3Descriptor {
     isRecord(value.capabilities)
   );
 }
+
+/** Opaque command results; T3 returns the last committed event sequence. */
+function dispatchResult(value: unknown): { readonly sequence: number } {
+  if (!isRecord(value) || !Number.isSafeInteger(value.sequence)) {
+    throw new ApiError(502, "upstream_invalid_response", "T3 Code returned an invalid response");
+  }
+  return { sequence: value.sequence as number };
+}
+
+function v2(map: () => unknown): unknown {
+  try { return map(); } catch (error) {
+    if (error instanceof V2ShapeError) {
+      throw new ApiError(502, "upstream_incompatible", "T3 Code is not compatible with this bridge");
+    }
+    throw error;
+  }
+}
+
+/** V2 provenance. The glasses are a mobile client acting for the user. */
+const CREATION_SOURCE = "mobile";
 
 function titleFromText(text: string): string {
   const firstLine = text.split(/\r?\n/, 1)[0]?.trim() || "New session";
@@ -278,6 +287,8 @@ export class HttpT3Client implements T3Client {
         headers: {
           Accept: "application/json",
           ...authorization,
+          ...(url.pathname.startsWith("/api/orchestration/")
+            ? { [ORCHESTRATION_PROTOCOL_HEADER]: ORCHESTRATION_PROTOCOL_VERSION } : {}),
           ...(init?.body === undefined ? {} : { "Content-Type": "application/json" }),
           ...init?.headers,
         },
@@ -302,7 +313,8 @@ export class HttpT3Client implements T3Client {
 
   async descriptor(): Promise<T3Descriptor> {
     const value = await this.request("/.well-known/t3/environment");
-    if (!hasDescriptorShape(value)) {
+    if (!hasDescriptorShape(value) ||
+        String((value as unknown as Record<string, unknown>).orchestrationProtocolVersion) !== ORCHESTRATION_PROTOCOL_VERSION) {
       throw new ApiError(502, "upstream_incompatible", "T3 Code is not compatible with this bridge");
     }
     return value;
@@ -310,31 +322,21 @@ export class HttpT3Client implements T3Client {
 
   async shell(): Promise<T3ShellSnapshot> {
     const value = await this.request("/api/orchestration/shell");
-    if (!hasSnapshotShape(value)) {
-      throw new ApiError(502, "upstream_incompatible", "T3 Code is not compatible with this bridge");
-    }
-    return value;
+    return v2(() => shellFromV2(value)) as T3ShellSnapshot;
   }
 
   async thread(threadId: string): Promise<T3ThreadSnapshot> {
     const value = await this.request(`/api/orchestration/threads/${encodeURIComponent(threadId)}`);
-    if (!hasThreadShape(value)) {
-      throw new ApiError(502, "upstream_incompatible", "T3 Code is not compatible with this bridge");
-    }
-    return value;
+    return v2(() => threadFromV2(value)) as T3ThreadSnapshot;
   }
 
   async threadPage(threadId: string, beforeCursor?: string): Promise<T3ThreadSnapshot> {
-    const query = new URLSearchParams({ turnLimit: "100" });
-    if (beforeCursor !== undefined) query.set("beforeCursor", beforeCursor);
-    const value = await this.request(`/api/orchestration/threads/${encodeURIComponent(threadId)}?${query}`);
-    if (!hasThreadShape(value) || !isRecord(value.page) ||
-        typeof value.page.hasMore !== "boolean" ||
-        !(value.page.beforeCursor === null || typeof value.page.beforeCursor === "string") ||
-        !Number.isSafeInteger(value.page.snapshotSequence)) {
+    // The V2 detail snapshot is the complete projection, so it is a single page.
+    if (beforeCursor !== undefined) {
       throw new ApiError(502, "upstream_incompatible", "T3 Code pagination is unavailable");
     }
-    return value;
+    const snapshot = await this.thread(threadId);
+    return { ...snapshot, page: { hasMore: false, beforeCursor: null, snapshotSequence: snapshot.snapshotSequence } };
   }
 
   async modelCatalog(): Promise<T3ModelCatalog> {
@@ -357,6 +359,11 @@ export class HttpT3Client implements T3Client {
   }
 
   private async fetchModelCatalog(): Promise<ParsedModelCatalog> {
+    return parseModelCatalog(await this.rpc("server.getConfig", {}));
+  }
+
+  /** One request over T3's Effect RPC websocket, which carries every V2 command. */
+  private async rpc(tag: string, payload: unknown): Promise<unknown> {
     const requestId = randomUUID();
     let connection: Awaited<ReturnType<T3RequestAuthorization["websocket"]>>;
     try {
@@ -367,10 +374,12 @@ export class HttpT3Client implements T3Client {
     }
     const maximumBytes = this.config.maxUpstreamBytes;
     const timeoutMs = this.config.upstreamTimeoutMs;
+    const url = new URL(connection.url);
+    url.searchParams.set(ORCHESTRATION_PROTOCOL_QUERY_PARAM, ORCHESTRATION_PROTOCOL_VERSION);
 
-    const value = await new Promise<unknown>((resolve, reject) => {
+    return new Promise<unknown>((resolve, reject) => {
       let settled = false;
-      const socket = new WebSocket(connection.url, {
+      const socket = new WebSocket(url, {
         ...(connection.headers ? { headers: connection.headers } : {}),
         followRedirects: false,
         handshakeTimeout: timeoutMs,
@@ -399,8 +408,8 @@ export class HttpT3Client implements T3Client {
           JSON.stringify({
             _tag: "Request",
             id: requestId,
-            tag: "server.getConfig",
-            payload: {},
+            tag,
+            payload,
             headers: [],
           }),
           (error) => {
@@ -454,7 +463,6 @@ export class HttpT3Client implements T3Client {
         finish({ error: new ApiError(502, "upstream_unavailable", "T3 Code is unavailable") });
       });
     });
-    return parseModelCatalog(value);
   }
 
   async startSession(input: {
@@ -504,10 +512,11 @@ export class HttpT3Client implements T3Client {
       ...(options.length > 0 ? { options } : {}),
     };
 
-    const now = new Date().toISOString();
     await this.dispatch({
       type: "thread.create",
       commandId: randomUUID(),
+      createdBy: "user",
+      creationSource: CREATION_SOURCE,
       threadId: input.threadId,
       projectId: input.project.id,
       title: titleFromText(input.text),
@@ -516,23 +525,9 @@ export class HttpT3Client implements T3Client {
       interactionMode: "default",
       branch: null,
       worktreePath: null,
-      createdAt: now,
     });
-    return this.dispatch({
-      type: "thread.turn.start",
-      commandId: randomUUID(),
-      threadId: input.threadId,
-      modelSelection,
-      message: {
-        messageId: randomUUID(),
-        role: "user",
-        text: input.text,
-        attachments: [],
-      },
-      runtimeMode: input.runtimeMode,
-      interactionMode: "default",
-      createdAt: now,
-    });
+    return this.dispatchMessage({ threadId: input.threadId, text: input.text, modelSelection,
+      titleSeed: titleFromText(input.text), deliveryIntent: "auto" });
   }
 
   async sendMessage(input: {
@@ -541,7 +536,6 @@ export class HttpT3Client implements T3Client {
     readonly interactionMode?: "default" | "plan";
     readonly reasoningId?: string;
   }): Promise<{ readonly sequence: number }> {
-    let modelSelection = input.thread.modelSelection;
     if (input.reasoningId !== undefined) {
       await this.setReasoning({ thread: input.thread, reasoningId: input.reasoningId });
       const current = (await this.thread(input.thread.id)).thread;
@@ -551,61 +545,48 @@ export class HttpT3Client implements T3Client {
         throw new ApiError(409, "model_selection_changed", "The session model changed. Refresh the session.");
       }
       requireIdleSession(current);
-      modelSelection = current.modelSelection;
     }
     const mode = input.interactionMode ?? input.thread.interactionMode;
     if (mode !== input.thread.interactionMode) await this.setInteractionMode(input.thread.id, mode);
-    const now = new Date().toISOString();
-    return this.dispatch({
-      type: "thread.turn.start",
-      commandId: randomUUID(),
-      threadId: input.thread.id,
-      modelSelection,
-      message: {
-        messageId: randomUUID(),
-        role: "user",
-        text: input.text,
-        attachments: [],
-      },
-      runtimeMode: input.thread.runtimeMode,
-      interactionMode: mode,
-      createdAt: now,
-    });
+    return this.dispatchMessage({ threadId: input.thread.id, text: input.text, deliveryIntent: "auto" });
   }
 
   private async setInteractionMode(threadId: string, interactionMode: "default" | "plan", commandId: string = randomUUID()): Promise<{ readonly sequence: number }> {
-    // Current T3 reads persisted thread mode when starting a turn; a mode in
-    // the turn.start command alone does not switch it.
-    return this.dispatch({ type: "thread.interaction-mode.set", commandId, threadId,
-      interactionMode, createdAt: new Date().toISOString() });
+    // T3 reads the persisted thread mode when a run starts.
+    return this.dispatch({ type: "thread.interaction-mode.set", commandId, threadId, interactionMode });
   }
 
-  private async activateUpdatedModelSelection(
-    thread: T3ThreadShell,
-    update: { readonly sequence: number },
-  ): Promise<{ readonly sequence: number }> {
-    // T3's Codex adapter applies a complete model selection when the glasses
-    // start a fresh turn. Stop the idle provider as well so its next resume
-    // cannot retain the old model before that turn is dispatched. T3 preserves
-    // the provider cursor, so this does not discard conversation history.
-    if (thread.session === null || thread.session.status === "stopped") return update;
-    const result = await this.dispatch({
-      type: "thread.session.stop",
-      commandId: randomUUID(),
-      threadId: thread.id,
-      createdAt: new Date().toISOString(),
+  /**
+   * T3 V2 resolves delivery against its serialized thread state
+   * (`serverResolvedCommandContext`): "auto" starts a run when idle and steers
+   * or queues into an active run as the provider supports; "steer" asks for
+   * same-run steering. The bridge validates once and never retries.
+   */
+  private async dispatchMessage(input: {
+    readonly threadId: string;
+    readonly text: string;
+    readonly deliveryIntent: "auto" | "steer";
+    readonly modelSelection?: T3ModelSelection;
+    readonly titleSeed?: string;
+    readonly sourcePlanRef?: { readonly threadId: string; readonly planId: string };
+    readonly commandId?: string;
+  }): Promise<{ readonly sequence: number }> {
+    const commandId = input.commandId ?? randomUUID();
+    return this.dispatch({
+      type: "message.dispatch",
+      commandId,
+      createdBy: "user",
+      creationSource: CREATION_SOURCE,
+      threadId: input.threadId,
+      messageId: input.commandId === undefined ? randomUUID() : `${commandId}-message`,
+      text: input.text,
+      attachments: [],
+      ...(input.modelSelection === undefined ? {} : { modelSelection: input.modelSelection }),
+      ...(input.titleSeed === undefined ? {} : { titleSeed: input.titleSeed }),
+      ...(input.sourcePlanRef === undefined ? {} : { sourcePlanRef: input.sourcePlanRef }),
+      deliveryIntent: input.deliveryIntent,
+      dispatchMode: { type: "start_immediately" },
     });
-    const deadline = Date.now() + this.config.upstreamTimeoutMs;
-    while (Date.now() < deadline) {
-      const current = (await this.thread(thread.id)).thread;
-      if (current.session === null || current.session.status === "stopped") return result;
-      if (["running", "starting"].includes(current.session.status) || current.session.activeTurnId != null ||
-          current.latestTurn?.state === "running") {
-        throw new ApiError(409, "session_busy", "The session became busy while changing its model. Try again when the turn finishes");
-      }
-      await new Promise((resolve) => setTimeout(resolve, 25));
-    }
-    throw new ApiError(502, "upstream_timeout", "T3 Code did not activate the selected model in time");
   }
 
   async setReasoning(input: { readonly thread: T3ThreadShell; readonly reasoningId: string }): Promise<{ readonly sequence: number }> {
@@ -628,9 +609,10 @@ export class HttpT3Client implements T3Client {
     // Preserve provider, model, speed and every unrelated existing option.
     const options = [...(current.modelSelection.options ?? []).filter((option) => option.id !== reasoning.t3OptionId),
       { id: reasoning.t3OptionId, value: input.reasoningId }];
-    const result = await this.dispatch({ type: "thread.meta.update", commandId: randomUUID(), threadId: input.thread.id,
+    // V2 applies the thread selection when the next run starts, including a
+    // provider switch with its context handoff, so no session restart is needed.
+    return this.dispatch({ type: "thread.model-selection.set", commandId: randomUUID(), threadId: input.thread.id,
       modelSelection: { ...current.modelSelection, options } });
-    return this.activateUpdatedModelSelection(current, result);
   }
 
   async setModel(input: { readonly thread: T3ThreadShell; readonly selection: T3NewSessionSelection }): Promise<{ readonly sequence: number }> {
@@ -659,65 +641,33 @@ export class HttpT3Client implements T3Client {
       throw new ApiError(409, "model_selection_changed", "The session model changed. Refresh the session.");
     }
     requireIdleSession(current);
-    const result = await this.dispatch({ type: "thread.meta.update", commandId: randomUUID(), threadId: current.id,
+    return this.dispatch({ type: "thread.model-selection.set", commandId: randomUUID(), threadId: current.id,
       modelSelection: { instanceId: provider.instanceId, model: model.slug, ...(options.length > 0 ? { options } : {}) } });
-    return this.activateUpdatedModelSelection(current, result);
   }
 
   async approvePlan(input: { readonly thread: T3ThreadShell; readonly planId: string; readonly planMarkdown: string; readonly commandId: string }): Promise<{ readonly sequence: number }> {
     await this.setInteractionMode(input.thread.id, "default", `${input.commandId}-mode`);
-    return this.dispatch({ type: "thread.turn.start", commandId: input.commandId, threadId: input.thread.id,
-      modelSelection: input.thread.modelSelection,
-      message: { messageId: `${input.commandId}-message`, role: "user",
-        text: `Implement this plan:\n\n${input.planMarkdown}`, attachments: [] },
-      sourceProposedPlan: { threadId: input.thread.id, planId: input.planId },
-      runtimeMode: input.thread.runtimeMode, interactionMode: "default", createdAt: new Date().toISOString() });
+    return this.dispatchMessage({ threadId: input.thread.id, commandId: input.commandId, deliveryIntent: "auto",
+      text: `Implement this plan:\n\n${input.planMarkdown}`,
+      sourcePlanRef: { threadId: input.thread.id, planId: input.planId } });
   }
 
   async steerMessage(input: {
     readonly thread: T3ThreadShell;
     readonly text: string;
   }): Promise<{ readonly sequence: number }> {
-    // T3's orchestration API uses thread.turn.start for both a fresh turn and
-    // same-turn steering. When the provider has an active turn, its adapter
-    // queues this message into that turn rather than opening a second one.
-    const now = new Date().toISOString();
-    return this.dispatch({
-      type: "thread.turn.start",
-      commandId: randomUUID(),
-      threadId: input.thread.id,
-      message: {
-        messageId: randomUUID(),
-        role: "user",
-        text: input.text,
-        attachments: [],
-      },
-      runtimeMode: input.thread.runtimeMode,
-      interactionMode: input.thread.interactionMode,
-      createdAt: now,
-    });
+    return this.dispatchMessage({ threadId: input.thread.id, text: input.text, deliveryIntent: "steer" });
   }
 
   async replyMessage(input: {
     readonly thread: T3ThreadShell;
     readonly text: string;
   }): Promise<{ readonly sequence: number }> {
-    // T3 accepts thread.turn.start for both a reply after a completed turn
-    // and a message steered into an active turn. The bridge validates once
-    // before this dispatch and never retries an ambiguous outcome.
-    return this.dispatch({
-      type: "thread.turn.start",
-      commandId: randomUUID(),
-      threadId: input.thread.id,
-      message: { messageId: randomUUID(), role: "user", text: input.text, attachments: [] },
-      runtimeMode: input.thread.runtimeMode,
-      interactionMode: input.thread.interactionMode,
-      createdAt: new Date().toISOString(),
-    });
+    return this.dispatchMessage({ threadId: input.thread.id, text: input.text, deliveryIntent: "auto" });
   }
 
   async settleThread(threadId: string): Promise<{ readonly sequence: number }> {
-    // T3 enforces running/queued-turn and blocking-request checks atomically.
+    // T3 enforces running/queued-run and blocking-request checks atomically.
     // Do not replace this command with a metadata write or auto-settlement.
     return this.dispatch({ type: "thread.settle", commandId: randomUUID(), threadId });
   }
@@ -728,24 +678,26 @@ export class HttpT3Client implements T3Client {
     readonly commandId: string;
     readonly answers: Readonly<Record<string, string | string[]>>;
   }): Promise<{ readonly sequence: number }> {
+    // Glasses answer with option labels. T3 expects each option's value,
+    // which defaults to its label.
+    const values = userInputOptionValues(
+      await this.request(`/api/orchestration/threads/${encodeURIComponent(input.threadId)}`), input.requestId);
+    if (values === null) throw new ApiError(409, "plan_request_unavailable", "These questions are no longer available. Refresh the session.");
+    const answers = Object.fromEntries(Object.entries(input.answers).map(([questionId, answer]) => {
+      const options = values.get(questionId);
+      const value = (label: string) => options?.get(label) ?? label;
+      return [questionId, Array.isArray(answer) ? answer.map(value) : value(answer)];
+    }));
     return this.dispatch({
-      type: "thread.user-input.respond",
+      type: "runtime-request.respond",
       commandId: input.commandId,
       threadId: input.threadId,
       requestId: input.requestId,
-      answers: input.answers,
-      createdAt: new Date().toISOString(),
+      answers,
     });
   }
 
   private async dispatch(command: Record<string, unknown>): Promise<{ readonly sequence: number }> {
-    const value = await this.request("/api/orchestration/dispatch", {
-      method: "POST",
-      body: JSON.stringify(command),
-    });
-    if (!isRecord(value) || !Number.isSafeInteger(value.sequence)) {
-      throw new ApiError(502, "upstream_invalid_response", "T3 Code returned an invalid response");
-    }
-    return { sequence: value.sequence as number };
+    return dispatchResult(await this.rpc("orchestration.dispatchCommand", command));
   }
 }

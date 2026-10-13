@@ -207,6 +207,47 @@ test('custom macOS T3 configuration is persisted without broadening authenticati
   assert.match(plist, /<string>-i<\/string>/);
   assert.doesNotMatch(plist, /T3_ACCESS_TOKEN|BRIDGE_TOKEN|BRIDGE_PASSPHRASE/);
 });
+test('native t3 CLI installs omit the server entry', () => {
+  const prerequisites = ['--t3-executable', '/opt/t3/t3', '--whisper-executable', '/opt/whisper',
+    '--whisper-model', '/home/test/model.bin', '--tailscale-executable', '/opt/tailscale'];
+  const parsed = parseArguments(prerequisites);
+  assert.equal(parsed.t3Entry, undefined);
+  const environment = bridgeEnvironment({ bridgePort: 8787, t3BaseUrl: 'http://127.0.0.1:3773', t3BaseDir: '/home/test/.t3',
+    t3Executable: parsed.t3Executable, whisperModel: parsed.whisperModel });
+  assert.equal(environment.T3_CLI_EXECUTABLE, '/opt/t3/t3');
+  assert.equal('T3_CLI_ENTRY' in environment, false);
+});
+test('launcher prefers the CLI of the active T3 runtime over a pinned CLI', async (t) => {
+  if (process.platform === 'win32') return t.skip('POSIX executable bits');
+  const base = await mkdtemp(path.join(await realpath(tmpdir()), 'bridge-t3-runtime-'));
+  const saved = Object.fromEntries(['T3_APP_PATH', 'T3_CLI_EXECUTABLE', 'T3_CLI_ENTRY'].map(key => [key, process.env[key]]));
+  try {
+    const pinned = path.join(base, 'pinned-t3');
+    await writeFile(pinned, '#!/bin/sh\nexit 0\n', { mode: 0o700 });
+    process.env.T3_CLI_EXECUTABLE = pinned; delete process.env.T3_CLI_ENTRY; delete process.env.T3_APP_PATH;
+    const { findApp, activeRuntimeCli, runT3 } = await import('../bridge/scripts/start-with-t3.mjs');
+    // No runtime state: the configured native CLI runs without a server entry.
+    assert.deepEqual(await findApp({ baseDir: base }), { executable: pinned, entry: null });
+    const version = '0.0.46-nightly.20261013.3053';
+    const active = path.join(base, 'runtime', 'versions', version, 't3');
+    await mkdir(path.dirname(active), { recursive: true });
+    await writeFile(active, '#!/bin/sh\nprintf "%s|" "$@"\n', { mode: 0o700 });
+    await writeFile(path.join(base, 'runtime', 'service-state.json'), JSON.stringify({ protocol: 3, activeVersion: version }));
+    const resolved = await findApp({ baseDir: base });
+    assert.deepEqual(resolved, { executable: active, entry: null });
+    assert.equal((await runT3(resolved, ['auth', 'pairing', 'create'])).stdout, 'auth|pairing|create|');
+    // Another server (such as a desktop app) is running: the runtime CLI does not match it.
+    assert.deepEqual(await findApp({ baseDir: base, serverVersion: version }), resolved);
+    assert.deepEqual(await findApp({ baseDir: base, serverVersion: '0.0.47' }), { executable: pinned, entry: null });
+    for (const activeVersion of ['../escape', '', 42]) {
+      await writeFile(path.join(base, 'runtime', 'service-state.json'), JSON.stringify({ activeVersion }));
+      assert.equal(await activeRuntimeCli(base), null);
+    }
+  } finally {
+    for (const [key, value] of Object.entries(saved)) { if (value === undefined) delete process.env[key]; else process.env[key] = value; }
+    await rm(base, { recursive: true, force: true });
+  }
+});
 test('macOS launcher honors CFBundleExecutable in a renamed custom bundle', async (t) => {
   if (process.platform !== 'darwin') return t.skip('Native macOS bundle metadata check');
   const directory = await mkdtemp(path.join(await realpath(tmpdir()), 'bridge-custom-app-'));

@@ -137,6 +137,7 @@ export interface T3ThreadShell {
 }
 
 export interface T3Message {
+  readonly attachments?: readonly unknown[];
   readonly id: string;
   readonly role: "user" | "assistant" | "system";
   readonly text: string;
@@ -148,6 +149,7 @@ export interface T3Message {
 
 /** Activity metadata read from the untrusted T3 response. Payload fields stay opaque. */
 export interface T3ThreadActivity {
+  readonly id?: unknown;
   readonly kind?: unknown;
   readonly turnId?: unknown;
   readonly createdAt?: unknown;

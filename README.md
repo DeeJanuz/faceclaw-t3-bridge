@@ -59,7 +59,7 @@ The optional Signal service supports the Faceclaw messaging app's legacy bridge 
 - [Bridge federation across computers](docs/peers.md)
 - [Assistant context directory](docs/assistant-context.md)
 
-T3's orchestration API is not a stable third-party SDK. Rerun compatibility checks after upgrading T3 Code.
+The bridge requires T3 Code orchestration protocol 2 (orchestration V2, T3 Code 0.0.46 and newer). T3's orchestration API is not a stable third-party SDK. Rerun compatibility checks after upgrading T3 Code; see [T3 compatibility](bridge/README.md#t3-compatibility).
 
 ## License
 
@@ -67,10 +67,10 @@ T3's orchestration API is not a stable third-party SDK. Rerun compatibility chec
 
 ## Transcript token usage
 
-Normalized transcripts include `tokenUsage: { contextTokens, contextWindowTokens, totalTokens, latestTotalTokens, updatedAt }`, with nullable values. The bridge reads T3 Code `context-window.updated` activities: the latest `usedTokens` and `maxTokens` supply context occupancy and capacity, the greatest reported `totalProcessedTokens` supplies thread-lifetime cumulative usage, and `latestTotalTokens` preserves the cumulative value on the newest valid activity. It never adds cumulative snapshots or cached/reasoning subtotals. Compaction can reduce context without reducing the lifetime total. The glasses use the latest counter to display usage since an observed model switch. Providers without the corresponding fields remain unknown. Raw provider payloads are not forwarded.
+Normalized transcripts include `tokenUsage: { contextTokens, contextWindowTokens, totalTokens, latestTotalTokens, updatedAt }`, with nullable values. The bridge reads T3 Code provider turns: the newest `tokenUsage.usedTokens` and `maxTokens` supply context occupancy and capacity. V2 reports no cumulative counter, so thread-lifetime usage is the sum of each provider turn's complete `turnTokenUsage` input and output tokens, and it is unknown once any turn reported partial or no usage. `latestTotalTokens` is that running sum at the newest report. It never adds occupancy snapshots or cached/reasoning subtotals. Compaction can reduce context without reducing the lifetime total. The glasses use the latest counter to display usage since an observed model switch. Providers without the corresponding fields remain unknown. Raw provider payloads are not forwarded.
 
-The source contract was checked against T3 Code commit `8ea52c8f2f4361e875d72ab30d72d37cfae4d87f` (`providerRuntime.ts`, `CodexAdapter.ts`, `ClaudeAdapter.ts`). Deploy the rebuilt bridge with the matching T3 APK to enable its CTX/TOTAL header.
+The source contract was checked against T3 Code `0.0.46-nightly.20261013.3053` (`orchestrationV2.ts`, `providerRuntime.ts`). Deploy the rebuilt bridge with the matching T3 APK to enable its CTX/TOTAL header.
 
 ### Assistant questions in ordinary sessions
 
-Structured `user-input.requested` activities are exposed for running turns in both `default` and `plan` interaction modes. The existing `pendingPlanInput` and `plan.submit` wire names remain for compatibility. Answers still require the current request identity and revision, session/project authorization, review, and explicit submission through `thread.user-input.respond`. Approval events and free-form transcript text do not become questions. Restart the bridge after rebuilding to activate this behavior; use a T3 APK that displays pending-question alerts.
+Pending V2 `user_input` runtime requests are exposed for running turns in both `default` and `plan` interaction modes. The existing `pendingPlanInput` and `plan.submit` wire names remain for compatibility. Answers still require the current request identity and revision, session/project authorization, review, and explicit submission through `runtime-request.respond`. Approval events and free-form transcript text do not become questions. Restart the bridge after rebuilding to activate this behavior; use a T3 APK that displays pending-question alerts.

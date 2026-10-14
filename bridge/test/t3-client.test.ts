@@ -388,6 +388,19 @@ describe("HttpT3Client same-turn steering", () => {
       answers: { approach: "small", features: ["A", "b"], custom: "Typed answer" } }]);
   });
 
+  it("answers an aliased long request id with T3's own id", async () => {
+    const requestId = `runtime-request:provider:claudeAgent:${"x%253A".repeat(60)}`;
+    const { createHash } = await import("node:crypto");
+    const alias = `v2:${createHash("sha256").update(requestId).digest("hex").slice(0, 40)}`;
+    const { commands, rpc } = commandRecorder();
+    const baseUrl = await startUpstream(async (_request, response) => {
+      respondJson(response, v2Detail({ id: "thread-1" }, { turnItems: [{ id: "turn-item:q", type: "user_input_request", requestId, runId: RUN_ID,
+        questions: [{ id: "q", header: "Q", question: "Q?", options: [{ label: "A", description: "First" }] }] }] }));
+    }, rpc);
+    await new HttpT3Client(config(baseUrl)).respondToPlanInput({ threadId: "thread-1", requestId: alias, commandId: "even-plan-alias", answers: { q: "A" } });
+    assert.equal(commands[0]!.requestId, requestId);
+  });
+
   it("refuses to answer a request that is no longer in the thread", async () => {
     const { commands, rpc } = commandRecorder();
     const baseUrl = await startUpstream(async (_request, response) => {

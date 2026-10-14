@@ -331,7 +331,7 @@ function runtimeRequestActivities(requests: readonly unknown[], items: readonly 
       const item = questions.get(request.id);
       if (item === undefined) continue;
       activities.push({ kind: "user-input.requested", turnId: nonEmpty(item.runId) ?? turnId,
-        createdAt: request.createdAt, payload: { requestId: request.id, questions: item.questions } });
+        createdAt: request.createdAt, payload: { requestId: activityId(request.id), questions: item.questions } });
     } else if (request.kind !== "user_input" && request.status === "resolved" && typeof request.decision === "string") {
       activities.push({ id: activityId(request.id), kind: "approval.resolved", turnId,
         createdAt: request.resolvedAt ?? request.createdAt, payload: { decision: request.decision } } as T3ThreadActivity);
@@ -421,12 +421,24 @@ export function threadFromV2(value: unknown): T3ThreadSnapshot {
   return { snapshotSequence: value.snapshotSequence as number, thread };
 }
 
-/** The question options T3 expects as answers, keyed by request id. Values fall back to labels. */
-export function userInputOptionValues(value: unknown, requestId: string): ReadonlyMap<string, ReadonlyMap<string, string>> | null {
+/**
+ * Resolves the bridge-facing request id to T3's own id and the option values
+ * T3 expects as answers (values fall back to labels). V2 request ids can
+ * exceed the bridge's id limits, so long ids travel as a stable hash alias.
+ */
+export function pendingUserInput(value: unknown, requestId: string): {
+  readonly requestId: string;
+  readonly optionValues: ReadonlyMap<string, ReadonlyMap<string, string>>;
+} | null {
   if (!record(value) || !record(value.projection)) return null;
   const item = array(value.projection.turnItems).find((candidate) => record(candidate) &&
-    candidate.type === "user_input_request" && candidate.requestId === requestId);
-  if (!record(item)) return null;
+    candidate.type === "user_input_request" && typeof candidate.requestId === "string" &&
+    (candidate.requestId === requestId || activityId(candidate.requestId) === requestId));
+  if (!record(item) || typeof item.requestId !== "string") return null;
+  return { requestId: item.requestId, optionValues: userInputOptionValues(item) };
+}
+
+function userInputOptionValues(item: Json): ReadonlyMap<string, ReadonlyMap<string, string>> {
   return new Map(array(item.questions).flatMap((question) => record(question) && typeof question.id === "string"
     ? [[question.id, new Map(array(question.options).flatMap((option) => record(option) && typeof option.label === "string"
         ? [[option.label, typeof option.value === "string" ? option.value : option.label] as const] : []))] as const]

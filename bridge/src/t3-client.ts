@@ -8,7 +8,7 @@ import {
   ORCHESTRATION_PROTOCOL_VERSION,
   shellFromV2,
   threadFromV2,
-  userInputOptionValues,
+  pendingUserInput,
   V2ShapeError,
 } from "./t3-v2.js";
 import type {
@@ -686,9 +686,10 @@ export class HttpT3Client implements T3Client {
   }): Promise<{ readonly sequence: number }> {
     // Glasses answer with option labels. T3 expects each option's value,
     // which defaults to its label.
-    const values = userInputOptionValues(
+    const pending = pendingUserInput(
       await this.request(`/api/orchestration/threads/${encodeURIComponent(input.threadId)}/bounded`), input.requestId);
-    if (values === null) throw new ApiError(409, "plan_request_unavailable", "These questions are no longer available. Refresh the session.");
+    if (pending === null) throw new ApiError(409, "plan_request_unavailable", "These questions are no longer available. Refresh the session.");
+    const values = pending.optionValues;
     const answers = Object.fromEntries(Object.entries(input.answers).map(([questionId, answer]) => {
       const options = values.get(questionId);
       const value = (label: string) => options?.get(label) ?? label;
@@ -698,7 +699,7 @@ export class HttpT3Client implements T3Client {
       type: "runtime-request.respond",
       commandId: input.commandId,
       threadId: input.threadId,
-      requestId: input.requestId,
+      requestId: pending.requestId,
       answers,
     });
   }

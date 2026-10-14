@@ -3,7 +3,7 @@ import { describe, it } from "node:test";
 import { normalizeSessions, normalizeTranscript } from "../src/normalize.js";
 import { normalizePendingPlanInput } from "../src/plan-input.js";
 import { normalizePendingProposedPlan, requireIdleSession } from "../src/session-controls.js";
-import { shellFromV2, threadFromV2, userInputOptionValues, V2ShapeError } from "../src/t3-v2.js";
+import { pendingUserInput, shellFromV2, threadFromV2, V2ShapeError } from "../src/t3-v2.js";
 import type { BridgeConfig } from "../src/types.js";
 
 const config = { projectIds: null } as unknown as BridgeConfig;
@@ -181,12 +181,34 @@ describe("T3 V2 thread adapter", () => {
     assert.equal(pending?.requestId, "request-1");
     assert.equal(pending?.turnId, RUN_2);
     assert.deepEqual(pending?.questions.map((question) => question.options.map((option) => option.label)), [["Small", "Large"]]);
-    assert.deepEqual([...userInputOptionValues(snapshot, "request-1")!.get("scope")!], [["Small", "small"], ["Large", "Large"]]);
-    assert.equal(userInputOptionValues(snapshot, "other"), null);
+    assert.deepEqual([...pendingUserInput(snapshot, "request-1")!.optionValues.get("scope")!], [["Small", "small"], ["Large", "Large"]]);
+    assert.equal(pendingUserInput(snapshot, "other"), null);
 
     const resolved = structuredClone(snapshot);
     (resolved.projection.runtimeRequests as Record<string, unknown>[])[0]!.status = "resolved";
     assert.equal(normalizePendingPlanInput(threadFromV2(resolved).thread), null);
+  });
+
+  it("aliases provider request ids that exceed the bridge id limits and resolves them back", () => {
+    const requestId = `runtime-request:provider:claudeAgent:provider-turn:${"turn%253Arun-attempt%253A".repeat(12)}:native-request:toolu_01`;
+    assert.ok(requestId.length > 256);
+    const questions = [{ id: "A long question used as its own id?", header: "Overlays", question: "A long question used as its own id?",
+      multiSelect: true, options: [{ label: "Poke", description: "Tap to click" }, { label: "Pinch", description: "Pinch to drag" }] }];
+    const snapshot = detail({
+      runs: [run(RUN_1, 1, "completed", "2026-10-13T10:01:30.000Z"), run(RUN_2, 2, "running", null)],
+      runtimeRequests: [{ id: requestId, nodeId: "node:runtime-request:x", providerTurnId: null, nativeRequestRef: null, kind: "user_input",
+        status: "pending", responseCapability: { type: "live", providerSessionId: "ps" },
+        createdAt: "2026-10-13T10:02:10.000Z", resolvedAt: null }],
+      turnItems: [
+        item("dynamic_tool", { id: "turn-item:ask", toolName: "AskUserQuestion", input: { questions }, status: "running", completedAt: null }),
+        item("user_input_request", { id: "turn-item:q", requestId, status: "waiting", questions }),
+      ],
+    });
+    const pending = normalizePendingPlanInput(threadFromV2(snapshot).thread);
+    assert.match(pending!.requestId, /^v2:[a-f0-9]{40}$/);
+    assert.equal(pending!.questions[0]!.multiSelect, true);
+    assert.equal(pendingUserInput(snapshot, pending!.requestId)!.requestId, requestId);
+    assert.equal(pendingUserInput(snapshot, requestId)!.requestId, requestId);
   });
 
   it("offers only an active proposed plan from the latest completed run", () => {
